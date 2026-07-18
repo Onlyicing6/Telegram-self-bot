@@ -74,10 +74,16 @@ async def _cron_loop(client, owner_id: int, tz_str: str) -> None:
             logger.info("Bio cron render args: template=%r mood=%r custom_text=%r", tmpl, mood, ctxtxt)
 
             new_bio = render_bio(tmpl, mood, ctxtxt, tz_str)
+            logger.info("Rendered bio: %r", new_bio)
 
-            if new_bio == (state.get("last_bio") or ""):
+            last_bio = state.get("last_bio")
+            logger.info("Comparing last_bio=%r new_bio=%r", last_bio, new_bio)
+
+            if new_bio == (last_bio or ""):
+                logger.info("Skipping — bio unchanged since last update")
                 continue
 
+            logger.info("Calling UpdateProfileRequest")
             try:
                 await client(UpdateProfileRequest(about=new_bio))
             except FloodWaitError as fwe:
@@ -87,13 +93,19 @@ async def _cron_loop(client, owner_id: int, tz_str: str) -> None:
             except asyncio.CancelledError:
                 raise
             except Exception as api_exc:
-                logger.warning("Bio API error (retrying next minute): %s", api_exc)
+                logger.exception(
+                    "Bio API error (retrying next minute): type=%s repr=%r",
+                    type(api_exc).__name__, api_exc,
+                )
                 continue
+
+            logger.info("Telegram bio updated successfully")
 
             db_client.update_bio_state(owner_id, {
                 "last_bio": new_bio,
                 "updated_at": datetime.now(tz).isoformat(),
             })
+            logger.info("DB bio_state updated with last_bio=%r", new_bio)
 
         except asyncio.CancelledError:
             logger.info("Bio cron cancelled.")

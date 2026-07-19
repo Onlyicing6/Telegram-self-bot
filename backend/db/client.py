@@ -298,6 +298,108 @@ def delete_save(owner_id: int, code: str) -> dict | None:
     return target
 
 
+def delete_save_row(owner_id: int, code: str) -> dict | None:
+    """Delete a saved_items row by short_code or save_code. Returns the deleted row or None.
+
+    Unlike delete_save, this does NOT look up the row first — it deletes directly
+    and returns whatever the DB returns. Used by .del <code> after Telegram deletion
+    has already been attempted.
+    """
+    target = query_save(code)
+    if not target or target.get("owner_id") != owner_id:
+        return None
+    db = get_db()
+    if db:
+        try:
+            sc = target.get("short_code") or target.get("save_code")
+            res = (
+                db.table("saved_items")
+                .delete()
+                .eq("owner_id", owner_id)
+                .eq("short_code" if target.get("short_code") else "save_code", sc)
+                .execute()
+            )
+            return target if (res.data or []) else None
+        except Exception as exc:
+            logger.warning("Supabase delete_save_row failed (%s) — using fallback.", exc)
+    _fallback["saved_items"] = [
+        s for s in _fallback["saved_items"]
+        if not (s.get("short_code") == target.get("short_code")
+                or s.get("save_code") == target.get("save_code"))
+    ]
+    return target
+
+
+def list_all_saves(owner_id: int) -> list:
+    """Return ALL saved items for an owner — used by cleanup and stats."""
+    db = get_db()
+    if db:
+        try:
+            result = (
+                db.table("saved_items")
+                .select("id,short_code,save_code,saved_chat_id,saved_msg_id,media_type,file_name,mime_type,file_size,save_type,created_at")
+                .eq("owner_id", owner_id)
+                .order("created_at", desc=True)
+                .execute()
+            )
+            return result.data or []
+        except Exception as exc:
+            logger.warning("Supabase list_all_saves failed (%s) — using fallback.", exc)
+    items = [s for s in _fallback["saved_items"] if s.get("owner_id") == owner_id]
+    items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return items
+
+
+def cleanup_orphans(owner_id: int, orphan_ids: list[int]) -> int:
+    """Delete saved_items rows by ID. Returns count of deleted rows."""
+    if not orphan_ids:
+        return 0
+    db = get_db()
+    if db:
+        try:
+            res = (
+                db.table("saved_items")
+                .delete()
+                .eq("owner_id", owner_id)
+                .in_("id", orphan_ids)
+                .execute()
+            )
+            return len(res.data) if res.data else 0
+        except Exception as exc:
+            logger.warning("Supabase cleanup_orphans failed (%s) — using fallback.", exc)
+    before = len(_fallback["saved_items"])
+    id_set = set(orphan_ids)
+    _fallback["saved_items"] = [
+        s for s in _fallback["saved_items"]
+        if not (s.get("owner_id") == owner_id and s.get("id") in id_set)
+    ]
+    return before - len(_fallback["saved_items"])
+
+
+def get_stats(owner_id: int) -> dict:
+    """Return aggregate statistics for saved items."""
+    items = list_all_saves(owner_id)
+    total = len(items)
+
+    by_type: dict[str, int] = {}
+    for item in items:
+        mt = item.get("media_type") or "Unknown"
+        by_type[mt] = by_type.get(mt, 0) + 1
+
+    total_size = sum(item.get("file_size") or 0 for item in items)
+
+    oldest = items[-1].get("created_at") if items else None
+    newest = items[0].get("created_at") if items else None
+
+    return {
+        "total": total,
+        "by_type": by_type,
+        "size_estimate": total_size,
+        "oldest": oldest,
+        "newest": newest,
+    }
+
+
 def count_saves(owner_id: int, save_type: str | None = None) -> int:
     db = get_db()
     if db:

@@ -156,15 +156,16 @@ def _build_confirmation(
     file_name: str | None,
 ) -> str:
     icon = _media_icon(media_type)
-    mode_label = "Forward" if mode == "f" else "Deep"
+    mode_label = "Forward Save" if mode == "f" else "Deep Save"
     lines = [
-        f"✅ **Saved**",
-        f"Code: `{save_code}`",
-        f"Mode: {mode_label}",
-        f"Type: {media_type}",
+        f"{icon} **Saved Successfully**",
+        "",
+        f"**Code:** `{save_code}`",
+        f"**Type:** {media_type}",
     ]
     if file_name:
-        lines.append(f"Name: `{file_name}`")
+        lines.append(f"**Filename:** `{file_name}`")
+    lines.append(f"**Mode:** {mode_label}")
     return "\n".join(lines)
 
 

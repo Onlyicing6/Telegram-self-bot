@@ -47,6 +47,9 @@ def register(client, owner_id: int):
             await event.edit(f"❌ No item found for `{save_code}`")
             return
         await event.edit(_format_preview(row))
+        await db_client.log(owner_id, "INFO", f"Preview {save_code}", {
+            "save_code": save_code,
+        })
 
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.send\s+(\S+)$"))
     async def send_cmd(event):

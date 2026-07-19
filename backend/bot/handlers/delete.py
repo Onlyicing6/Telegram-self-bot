@@ -1,7 +1,7 @@
 """
 .del <n>         — Delete the last n outgoing messages in this chat.
 .del id <msgid>  — Delete all messages from <msgid> forward in this chat.
-.del <code>      — Delete a saved item from the index (e.g. .del S391).
+.del <code>      — Delete a saved item: Telegram message + DB row.
 
 Edit-first policy: error feedback edits the trigger message.
 Successful deletion silently removes all targeted messages (including the command).
@@ -68,13 +68,64 @@ def register(client, owner_id: int):
         else:
             code = arg.upper()
             try:
-                row = db_client.delete_save(owner_id, code)
+                row = db_client.query_save(code)
             except Exception as exc:
-                logger.error("del save_code failed: %s", exc)
+                logger.error("del save_code DB query failed: %s", exc)
                 await event.edit(f"❌ DB error: {exc}")
                 return
             if not row:
                 await event.edit(f"❌ No saved item found for `{code}`")
                 return
+
+            saved_chat_id = row.get("saved_chat_id")
+            saved_msg_id = row.get("saved_msg_id")
             display = row.get("short_code") or row.get("save_code") or code
-            await event.edit(f"🗑 Deleted saved item `{display}`")
+
+            tg_deleted = False
+            tg_error = None
+            if saved_chat_id and saved_msg_id:
+                try:
+                    await client.delete_messages(saved_chat_id, [saved_msg_id])
+                    tg_deleted = True
+                except Exception as exc:
+                    tg_error = exc
+                    logger.warning("del %s: Telegram deletion failed: %s", code, exc)
+            else:
+                tg_deleted = True
+
+            db_deleted = False
+            db_error = None
+            try:
+                removed = db_client.delete_save_row(owner_id, code)
+                db_deleted = removed is not None
+            except Exception as exc:
+                db_error = exc
+                logger.error("del %s: DB deletion failed: %s", code, exc)
+
+            if tg_deleted and db_deleted:
+                await event.edit(f"🗑 Deleted `{display}`")
+            elif tg_deleted and not db_deleted:
+                await event.edit(
+                    f"⚠️ `{display}`: Telegram message deleted, but DB row removal failed: {db_error}"
+                )
+            elif not tg_deleted and db_deleted:
+                if tg_error:
+                    await event.edit(
+                        f"⚠️ `{display}`: DB row deleted, but Telegram message deletion failed: {tg_error}"
+                    )
+                else:
+                    await event.edit(
+                        f"🗑 Deleted `{display}` (Telegram message was already missing)"
+                    )
+            else:
+                await event.edit(
+                    f"❌ `{display}`: Both Telegram and DB deletion failed. "
+                    f"TG: {tg_error}, DB: {db_error}"
+                )
+
+            await db_client.log(
+                owner_id,
+                "INFO" if (tg_deleted and db_deleted) else "ERROR",
+                f"Delete {code}: tg={'ok' if tg_deleted else 'fail'}, db={'ok' if db_deleted else 'fail'}",
+                {"save_code": code, "tg_error": str(tg_error) if tg_error else None},
+            )

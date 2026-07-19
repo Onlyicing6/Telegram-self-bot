@@ -820,7 +820,7 @@ network) is wrapped in error handling that degrades gracefully.
    is cooperative async. Telethon + Uvicorn + Bio cron all share one event
    loop.
 
-8. **Frontend polling** — 30-second interval, parallel fetches. No
+8. **Frontend polling** — 30-second interval, parallel fetchs. No
    websockets or SSE.
 
 9. **Auto-reconnect** — Telethon auto-reconnects with 5 retries, 2s delay.
@@ -930,6 +930,9 @@ network) is wrapped in error handling that degrades gracefully.
 
 1. **Commit message format:** `type: description` (e.g., `docs: add
    authoritative AGENTS.md`, `fix: close BytesIO in deep save finally block`).
+   **All changes for one request MUST be in a single commit.** Never split
+   one task into multiple commits. Finish all work first, then create one
+   commit, then push.
 
 2. **One concern per commit.** Don't mix documentation, features, and fixes
    in a single commit.
@@ -943,8 +946,8 @@ network) is wrapped in error handling that degrades gracefully.
 5. **Verify before pushing.** Ensure the build passes and the commit
    contains only intended changes.
 
-6. **Remote:** `https://github.com/Onlyicing2/Telegram-self-bot.git`
-   (branch: `main`).
+6. **Remote:** Always push to the repository already connected to the
+   current workspace. Never hardcode a repository URL or owner name.
 
 7. **Don't push broken or incomplete work.** A shipped feature beats
    several half-built ones.
@@ -981,9 +984,8 @@ network) is wrapped in error handling that degrades gracefully.
 9. **Verify file existence and location** after creating files. Don't
    assume the write succeeded without checking.
 
-10. **Never guess URLs.** Use URLs provided by the user or documented in
-    this file. The Git remote is:
-    `https://github.com/Onlyicing2/Telegram-self-bot.git`
+10. **Never guess URLs.** Use URLs provided by the user. Never hardcode
+    a repository URL — always push to the connected workspace repository.
 
 11. **Commit only what was asked.** If asked to commit one file, stage and
     commit only that file. Don't `git add .` indiscriminately.
@@ -991,6 +993,11 @@ network) is wrapped in error handling that degrades gracefully.
 12. **Don't re-analyze the repository** if this document has already been
     read. Use it as the reference. Only read source files when this document
     is insufficient for the task.
+
+13. **Single-commit rule.** ALL modifications for one request MUST be
+    committed into ONE SINGLE COMMIT. Never create one commit per file.
+    Never create one commit per small change. Finish every task first,
+    then create exactly ONE commit, then push.
 
 ---
 

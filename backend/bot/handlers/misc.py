@@ -6,12 +6,23 @@
 .kill   — Diagnostic snapshot + stalled-task recovery.
 """
 import logging
+import os
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from telethon import events
 from backend.bot.handlers.guard import is_owner
 from backend import health
 from backend import diagnostics
 from backend.bio import engine as bio_engine
 from backend.db import client as db_client
+
+
+def _resolve_tz() -> str:
+    try:
+        tz_str = os.getenv("TZ", "Asia/Tehran")
+        ZoneInfo(tz_str)
+        return tz_str
+    except (ZoneInfoNotFoundError, Exception):
+        return "UTC"
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +180,7 @@ def register(client, owner_id: int):
                 client, bio_engine, db_client, snap
             )
             recovery = await diagnostics.recover_stalled(
-                client, owner_id, tz_str, bio_engine, db_client
+                client, owner_id, _resolve_tz(), bio_engine, db_client
             )
             await event.edit(report + recovery)
         except Exception as exc:

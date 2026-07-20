@@ -125,40 +125,91 @@ The **self-bot** is the brain of LifeOS. It connects to Telegram using your own 
 
 ## Helper Bot
 
-The **helper bot** is an optional secondary Telegram client that uses a **bot token** (from BotFather) instead of a user session. It handles inline UI only:
+The **helper bot** is an optional secondary Telegram client that uses a **bot token** (from BotFather) instead of a user session. It operates as a pure **Inline Engine + Callback Engine**:
 
-- Inline keyboards (buttons under messages)
-- Callback queries (button presses)
-- Inline menus and interactive panels
-- Editing inline messages
+- **Inline Mode** — answers `InlineQuery` events by generating panel results (buttons, text).
+- **Callback queries** — handles button presses on inline messages.
+- **Never sends messages directly** — all UI is delivered through Inline Mode.
 
-The self-bot remains the brain. The helper bot is purely a presentation layer for interactive Telegram UI elements that require a bot token.
+The self-bot remains the brain. The helper bot is purely a presentation layer.
 
-### When Is It Needed?
+### How It Works (Inline Mode Architecture)
 
-Most LifeOS commands work without the helper bot — they use the edit-first policy. The helper bot is needed only when you want **inline buttons** (e.g., tap a button to confirm a save, navigate a menu, or toggle the bio engine).
+```
+Self account (.help / .health / etc.)
+    │
+    │  1. Self triggers inline mode: client.inline_query(@helper_bot, "help")
+    │
+    ▼
+Helper Bot receives InlineQuery
+    │
+    │  2. Helper generates inline result (text + buttons)
+    │
+    ▼
+Self account auto-sends the first inline result
+    │
+    │  3. Message appears as:
+    │     "Parham via @LifeOSHelper"
+    │     with inline buttons
+    │
+    ▼
+User taps a button
+    │
+    │  4. Callback query → helper bot → panel/action/input handler
+    │
+    ▼
+Helper edits the inline message in-place (zero spam)
+```
 
-### How It Integrates
+### Key Properties
 
-- If `BOT_TOKEN` is set, `main.py` starts the helper bot in Phase 3.5 (after self-bot handlers, before the web server).
-- If `BOT_TOKEN` is not set, the helper bot is skipped — the self-bot works normally without inline UI.
-- The helper bot uses the same `is_owner` permission gate as the self-bot.
-- Future commands can request an inline panel via `InlinePanelBuilder` and `register_panel()`.
+- **Self account is the author** — all inline messages show your name with "via @HelperBot".
+- **Zero spam** — no new messages sent; panels are edited in-place.
+- **Type A commands** (no input needed) — tap button → execute immediately → edit panel with result.
+- **Type B commands** (need input) — tap button → panel becomes input screen → reply with text → execute → edit panel.
+- **Full backward compatibility** — `.save f`, `.bio on`, `.preview S391` etc. still work as edit-in-place commands.
+- **Inline panels** — `.help`, `.save`, `.bio`, `.db`, `.organize`, `.del`, `.find`, `.preview`, `.send` all open inline panels when called without arguments.
+
+### Command Types
+
+| Type | Description | Examples |
+|---|---|---|
+| **Type A** | No user input required — tap button → execute immediately | `.health`, `.bio on`, `.bio off`, `.db stats`, `.organize clean` |
+| **Type B** | Requires user input — panel becomes input screen, reply with text | `.save`, `.preview`, `.send`, `.bio text`, `.bio mood`, `.bio template`, `.find`, `.del` |
 
 ### Architecture
 
 ```
-Self Bot (brain)              Helper Bot (UI)
+Self Bot (brain)              Helper Bot (Inline + Callback Engine)
      │                              │
-     │  .save f (command)           │
+     │  .help (command)             │
      ├─────────────────────►        │
-     │                              │  sends inline keyboard
-     │                              ├────────────────────►
-     │                              │  user taps button
-     │                              │◄────────────────────
-     │  callback query              │
-     │  routed to panel handler     │
+     │  inline_query("help")        │
+     │                              │  answers InlineQuery
+     │                              │  with panel result
      │◄─────────────────────        │
+     │  self sends result           │
+     │  "OwnerName via @HelperBot"  │
+     │                              │
+     │  user taps button            │
+     │                              │  callback query
+     │                              │  → panel/action/input handler
+     │                              │  edits inline message
+     │                              │  (zero new messages)
+```
+
+### Helper Bot Modules
+
+```
+backend/helper/
+├── __init__.py          # Public API exports
+├── client.py            # Bot token client factory + username storage
+├── panels.py            # InlinePanelBuilder + callback router (panel/action/input)
+├── inline_engine.py     # Inline Mode core: trigger, builders, result factory
+├── inline_sender.py     # Self-bot side: send_inline_panel + input listener
+├── input_state.py       # Pending input state for Type B commands
+├── context.py           # Callback data encoding/decoding utilities
+└── tmp_context.py       # Temporary context store (e.g. reply message ref)
 ```
 
 ---
@@ -300,9 +351,11 @@ The dashboard is available at `http://localhost:8000`.
 
 ---
 
-## Creating the Helper Bot with BotFather
+## Helper Bot Setup
 
-The helper bot requires a bot token from BotFather. This is separate from your self-bot session.
+The helper bot requires a one-time setup through BotFather. Follow every step below — Inline Mode is **required** for the inline panel architecture to work.
+
+### Step 1: Create the Bot
 
 1. Open Telegram and message [@BotFather](https://t.me/BotFather).
 2. Send `/newbot`.
@@ -311,43 +364,94 @@ The helper bot requires a bot token from BotFather. This is separate from your s
 5. BotFather will give you a **bot token** that looks like `123456789:ABCdefGHIjklMNOpqrSTUvwxYZ`.
 6. Copy this token — this is your `BOT_TOKEN`.
 
-### Set the Bot Token
+### Step 2: Disable Group Privacy (Optional)
 
-Add `BOT_TOKEN` to your environment variables:
+Group Privacy mode prevents bots from seeing all messages in groups. If you plan to use LifeOS in group chats, disable it:
 
-```bash
-export BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrSTUvwxYZ
-```
+1. Send `/setprivacy` to [@BotFather](https://t.me/BotFather).
+2. Select your helper bot.
+3. Choose **Disable**.
 
-Or in the Render dashboard, add a new environment variable:
-- **Key:** `BOT_TOKEN`
-- **Value:** your bot token
+> **Note:** This is optional. In Saved Messages (where most LifeOS commands are used), Group Privacy does not apply. You only need this if you use LifeOS commands in group chats.
 
-### Security
+### Step 3: Enable Inline Mode (REQUIRED)
 
-- Never commit the bot token to your repository.
-- The bot token is stored as an environment variable only.
-- The helper bot uses the same `is_owner` permission gate as the self-bot — only you can interact with it.
+Inline Mode is **required** for the helper bot to work. Without it, inline panels cannot be triggered.
 
----
+1. Send `/setinline` to [@BotFather](https://t.me/BotFather).
+2. Select your helper bot from the list.
+3. Send a **placeholder message** — this is the hint text shown when someone types `@your_bot_username` in any chat. Example: `Search LifeOS...` or `LifeOS panels`.
+4. BotFather will confirm: "Inline mode enabled for @your_bot_username."
 
-## Enabling Inline Mode
+### Step 4: Set Bot Description
 
-Inline mode allows the helper bot to be mentioned in any chat via `@bot_username` and present inline results. This is useful for quick-save panels and search.
+The bot description appears when someone opens a chat with your bot:
 
-1. Open [@BotFather](https://t.me/BotFather) on Telegram.
-2. Send `/setinline`.
-3. Select your helper bot from the list.
-4. Send a placeholder message (e.g., "Search LifeOS...").
-5. BotFather will confirm: "Inline mode enabled for @your_bot_username."
+1. Send `/setdescription` to [@BotFather](https://t.me/BotFather).
+2. Select your helper bot.
+3. Send the description text, e.g.:
+   ```
+   LifeOS Helper Bot — Inline Mode engine for the LifeOS self-bot.
+   This bot powers inline panels and callback buttons.
+   Do not message this bot directly — use LifeOS commands instead.
+   ```
 
-### Test Inline Mode
+### Step 5: Set About Text
 
-In any chat, type:
-```
-@lifeos_helper_bot vacation
-```
-You should see inline results from your saved items (once inline search is implemented in a future update).
+The about text appears on the bot's profile page:
+
+1. Send `/setabouttext` to [@BotFather](https://t.me/BotFather).
+2. Select your helper bot.
+3. Send the about text, e.g.:
+   ```
+   LifeOS Helper — Inline panel engine for the LifeOS Telegram self-bot.
+   Created with Telethon + FastAPI.
+   ```
+
+### Step 6: Set Bot Commands (Optional)
+
+Bot commands show up as suggestions in the bot's chat interface:
+
+1. Send `/setcommands` to [@BotFather](https://t.me/BotFather).
+2. Select your helper bot.
+3. Send the commands list:
+   ```
+   help - Show LifeOS help panel
+   health - Show health dashboard
+   ```
+
+> **Note:** These commands are for the bot's own chat. LifeOS commands (`.help`, `.health`, etc.) are used from your own account, not the bot's chat.
+
+### Step 7: Configure Environment Variables
+
+Add the following environment variables to your Render service (or local `.env`):
+
+| Variable | Required? | Description |
+|---|---|---|
+| `BOT_TOKEN` | **Yes** (for inline UI) | Bot token from BotFather (Step 1). If empty, inline UI is disabled — the self-bot still works without it. |
+| `API_ID` | Yes | Telegram API ID from [my.telegram.org](https://my.telegram.org) — same as the self-bot. |
+| `API_HASH` | Yes | Telegram API Hash from [my.telegram.org](https://my.telegram.org) — same as the self-bot. |
+
+> **Important:** The helper bot uses the same `API_ID` and `API_HASH` as the self-bot. It only needs the `BOT_TOKEN` to be different.
+
+### Step 8: Verify Inline Mode
+
+After deploying with `BOT_TOKEN` set:
+
+1. In any Telegram chat, type `@your_helper_bot_username` followed by any text.
+2. You should see the inline placeholder text you set in Step 3.
+3. If you see "No results", that's normal — the helper bot only generates results when triggered by the self-bot's `inline_query()` call.
+
+### Step 9: Test LifeOS Inline Panels
+
+1. Send `.help` from your own account in any chat (or Saved Messages).
+2. The command message should disappear (deleted by the self-bot).
+3. An inline message should appear: `YourName via @your_helper_bot_username` with category buttons.
+4. Tap a category button — the message should edit in-place to show that category's commands.
+5. Tap "Back" — the message should return to the category list.
+6. Tap "Close" — the message should be deleted.
+
+If you see the plain text menu instead of buttons, the helper bot is not running or `BOT_TOKEN` is not set correctly.
 
 ---
 
@@ -514,6 +618,26 @@ All commands use the `.` prefix. All commands only fire on your own outgoing mes
 1. Verify the token with BotFather: send `/token` to [@BotFather](https://t.me/BotFather), select your bot, and compare.
 2. Update `BOT_TOKEN` with the correct token.
 3. Redeploy.
+
+### Inline panels not working (plain text instead of buttons)
+
+**Problem:** `.help` shows a plain text menu instead of inline buttons.
+
+**Cause:** The helper bot is not running (no `BOT_TOKEN` set, or the bot failed to start).
+
+**Fix:**
+1. Check that `BOT_TOKEN` is set in your environment.
+2. Check logs for helper bot startup errors.
+3. Verify the token is valid (see "Helper bot fails to start" above).
+4. Ensure Inline Mode is enabled via BotFather (`/setinline`).
+
+### Inline mode shows "No results"
+
+**Problem:** Typing `@your_helper_bot` in a chat shows "No results".
+
+**Cause:** This is normal behavior. The helper bot only generates inline results when triggered by the self-bot's `inline_query()` call. Direct typing won't show results unless the self-bot is running and triggers the query.
+
+**Fix:** No fix needed — this is expected. Use LifeOS commands (`.help`, `.health`, etc.) from your own account to trigger inline panels.
 
 ### Bot starts but commands don't respond
 

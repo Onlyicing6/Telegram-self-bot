@@ -17,11 +17,17 @@ from telethon.sessions import StringSession
 logger = logging.getLogger(__name__)
 
 _client: TelegramClient | None = None
+_bot_username: str = ""
 
 
 def is_available() -> bool:
     """Return True if the helper bot was successfully started."""
     return _client is not None and _client.is_connected()
+
+
+def get_bot_username() -> str:
+    """Return the helper bot's username (without @), or empty string."""
+    return _bot_username
 
 
 def _mask_token(token: str) -> str:
@@ -119,6 +125,8 @@ async def build_helper(bot_token: str) -> TelegramClient | None:
         await client.start(bot_token=clean_token)
         me = await client.get_me()
         login_pass = True
+        global _bot_username
+        _bot_username = (me.username or "").lstrip("@")
         logger.info("HELPER LOGIN ...... PASS — bot @%s (id=%s)", me.username, me.id)
     except Exception as exc:
         login_error = str(exc)

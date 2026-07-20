@@ -1,19 +1,17 @@
 """
 .ping    — Edit trigger with PONG (zero-spam policy).
 .id      — Chat ID + Message ID of the current context.
-.help    — Interactive inline help panel (helper bot inline keyboard).
-.health  — Full health dashboard.
-.kill    — Diagnostic snapshot + stalled-task recovery.
-.logs    — View recent diagnostic events (black box).
+.help    — Interactive inline help panel (via Inline Mode).
+.health  — Full health dashboard (inline panel).
+.kill    — Diagnostic snapshot + stalled-task recovery (inline panel).
+.logs    — View recent diagnostic events (inline panel).
 
-Help panel:
-  - .help deletes the trigger (zero-spam) and sends ONE inline message
-    via the helper bot with category buttons.
-  - Tapping a category edits that SAME message to show commands.
-  - Every category page has Back (returns to category list) and Close
-    (deletes the panel message).
-  - Falls back to a plain-text edit-in-place menu when the helper bot
-    is not available (no BOT_TOKEN).
+Inline Mode architecture:
+  - .help triggers inline mode → self sends inline result with buttons.
+  - .health/.kill/.logs trigger inline mode → self sends inline result.
+  - All panel navigation happens via callbacks (no new messages).
+  - Falls back to plain-text edit-in-place when the helper bot is not
+    available (no BOT_TOKEN).
 """
 import asyncio
 import logging
@@ -27,7 +25,13 @@ from backend import diagnostics, health
 from backend.bio import engine as bio_engine
 from backend.bot.handlers.guard import is_owner
 from backend.db import client as db_client
-from backend.helper import InlinePanelBuilder, register_panel, get_panel
+from backend.helper import (
+    InlinePanelBuilder,
+    register_panel,
+    get_panel,
+    register_inline_builder,
+    send_inline_panel,
+)
 from backend.helper.client import get_client
 
 
@@ -43,8 +47,6 @@ def _resolve_tz() -> str:
 logger = logging.getLogger(__name__)
 
 # ── Help menu data ──────────────────────────────────────────────────────
-# Each category is (menu_label, page_lines). Add a new category by appending
-# to this list — no other changes needed.
 
 _HELP_CATEGORIES: list[tuple[str, list[str]]] = [
     (
@@ -171,9 +173,26 @@ async def _help_panel_handler(event, extra: str) -> None:
     await event.edit(_build_main_menu_text(), buttons=_build_main_menu_keyboard())
 
 
+async def _help_inline_builder(event, extra: str) -> list:
+    from backend.helper.inline_engine import make_result
+    text = _build_main_menu_text()
+    buttons = _build_main_menu_keyboard()
+    from telethon.tl import types
+    msg = types.InputBotInlineMessageTextAuto(
+        message=text,
+        reply_markup=types.ReplyInlineMarkup(rows=buttons) if buttons else None,
+    )
+    result = types.InputBotInlineResult(
+        id="0",
+        type="article",
+        title="LifeOS Command Center",
+        send_message=msg,
+    )
+    return [result]
+
+
 def _register_help_panel() -> None:
-    if get_panel("help") is None:
-        register_panel("help", _help_panel_handler)
+    register_panel("help", _help_panel_handler)
 
 
 # ── Health dashboard ────────────────────────────────────────────────────
@@ -205,10 +224,6 @@ def _indicator(ok):
     return "🟢" if ok else "🔴"
 
 
-def _warn_indicator(ok):
-    return "🟢" if ok else "🟡"
-
-
 def _build_health_report(snap):
     process_ok = snap.get("process_alive", False)
     telegram_ok = snap.get("telethon_connected", False)
@@ -223,7 +238,6 @@ def _build_health_report(snap):
     last_bio = snap.get("last_bio_update_s")
     status = snap.get("status", "unknown")
 
-    # Process section
     try:
         usage = resource.getrusage(resource.RUSAGE_SELF)
         mem_mb = usage.ru_maxrss / 1024
@@ -232,7 +246,6 @@ def _build_health_report(snap):
         mem_mb = None
         cpu_s = None
 
-    # Task counts
     try:
         all_tasks = asyncio.all_tasks()
         running = sum(1 for t in all_tasks if not t.done())
@@ -243,10 +256,8 @@ def _build_health_report(snap):
         pending = None
         locked = None
 
-    # DB status
     db_ok = db_client.is_available()
 
-    # Heartbeat status
     if heartbeat_age is not None and heartbeat_age <= 15.0:
         hb_status = "OK"
     elif heartbeat_age is not None:
@@ -256,38 +267,30 @@ def _build_health_report(snap):
 
     lines = ["🩺 **LifeOS Health Dashboard**", ""]
 
-    # Process
     lines.append(f"{_indicator(process_ok)} **Process**: {'Alive' if process_ok else 'Dead'}")
     if mem_mb is not None:
         lines.append(f"   • Memory: `{mem_mb:.1f} MB`")
     if cpu_s is not None:
         lines.append(f"   • CPU: `{cpu_s:.2f}s`")
 
-    # Telegram
     lines.append(f"{_indicator(telegram_ok)} **Telegram**: {'Connected' if telegram_ok else 'Disconnected'}")
     lines.append(f"   • Last event: {_format_age(last_tg_event)}")
 
-    # Supervisor
     lines.append(f"{_indicator(supervisor_ok)} **Supervisor**: {'Running' if supervisor_ok else 'Stopped'}")
 
-    # Watchdog
     lines.append(f"{_indicator(watchdog_ok)} **Watchdog**: {'Running' if watchdog_ok else 'Stopped'}")
     lines.append(f"   • Last check: {_format_age(last_watchdog)}")
 
-    # Bio Cron
     lines.append(f"{_indicator(bio_cron_ok)} **Bio Cron**: {'Running' if bio_cron_ok else 'Stopped'}")
     lines.append(f"   • Last update: {_format_age(last_bio)}")
 
-    # Heartbeat
     hb_icon = "🟢" if hb_status == "OK" else ("🟡" if hb_status == "WARNING" else "🔴")
     lines.append(f"{hb_icon} **Heartbeat**: {hb_status}")
     if heartbeat_age is not None:
         lines.append(f"   • Age: `{int(heartbeat_age)}s`")
 
-    # Restart counter
     lines.append(f"{'🟢' if restart_count == 0 else '🟡'} **Restarts**: `{restart_count}`")
 
-    # Tasks
     if running is not None:
         lines.append(f"{'🟢' if running < 20 else '🟡'} **Running Tasks**: `{running}`")
     if pending is not None:
@@ -295,10 +298,8 @@ def _build_health_report(snap):
     if locked is not None:
         lines.append(f"{'🟢' if locked == 0 else '🟡'} **Locked Tasks**: `{locked}`")
 
-    # Database
     lines.append(f"{_indicator(db_ok)} **Database**: {'Available' if db_ok else 'Fallback'}")
 
-    # Uptime
     lines.append(f"{'🟢' if uptime_s and uptime_s > 0 else '🔴'} **Uptime**: `{_format_uptime(uptime_s)}`")
 
     lines.append("")
@@ -308,6 +309,89 @@ def _build_health_report(snap):
         lines.append("_⚠️ Issues detected — needs attention._")
 
     return "\n".join(lines)
+
+
+async def _health_inline_builder(event, extra: str) -> list:
+    from telethon.tl import types
+    snap = health.snapshot()
+    report = _build_health_report(snap)
+    builder = InlinePanelBuilder()
+    builder.add_row("Refresh", "action:health_refresh")
+    builder.add_row("Close", "panel:help:close")
+    buttons = builder.build()
+    msg = types.InputBotInlineMessageTextAuto(
+        message=report,
+        reply_markup=types.ReplyInlineMarkup(rows=buttons) if buttons else None,
+    )
+    result = types.InputBotInlineResult(
+        id="0",
+        type="article",
+        title="LifeOS Health Dashboard",
+        send_message=msg,
+    )
+    return [result]
+
+
+async def _kill_inline_builder(event, extra: str) -> list:
+    from telethon.tl import types
+    snap = health.snapshot()
+    self_client = _get_self_client()
+    report = diagnostics.build_diagnostic_report(
+        self_client, bio_engine, db_client, snap
+    )
+    recovery = await diagnostics.recover_stalled(
+        self_client, 0, _resolve_tz(), bio_engine, db_client
+    )
+    full_text = report + recovery
+    builder = InlinePanelBuilder()
+    builder.add_row("Close", "panel:help:close")
+    buttons = builder.build()
+    msg = types.InputBotInlineMessageTextAuto(
+        message=full_text,
+        reply_markup=types.ReplyInlineMarkup(rows=buttons) if buttons else None,
+    )
+    result = types.InputBotInlineResult(
+        id="0",
+        type="article",
+        title="LifeOS Diagnostics",
+        send_message=msg,
+    )
+    return [result]
+
+
+async def _logs_inline_builder(event, extra: str) -> list:
+    from telethon.tl import types
+    limit = 20
+    if extra and extra.isdigit():
+        limit = min(int(extra), 500)
+    elif extra == "errors":
+        limit = 20
+    events_list = diagnostics.filter_events(
+        limit=limit,
+        errors_only=(extra == "errors"),
+    )
+    text = diagnostics.format_events(events_list)
+    builder = InlinePanelBuilder()
+    builder.add_row("Errors Only", "action:logs_errors")
+    builder.add_row("Last 50", "action:logs_50")
+    builder.add_row("Close", "panel:help:close")
+    buttons = builder.build()
+    msg = types.InputBotInlineMessageTextAuto(
+        message=text,
+        reply_markup=types.ReplyInlineMarkup(rows=buttons) if buttons else None,
+    )
+    result = types.InputBotInlineResult(
+        id="0",
+        type="article",
+        title="LifeOS Event Log",
+        send_message=msg,
+    )
+    return [result]
+
+
+def _get_self_client():
+    from backend.helper.inline_engine import _self_client
+    return _self_client
 
 
 async def _safe_edit(event, text: str) -> None:
@@ -350,8 +434,12 @@ def register(client, owner_id: int):
             logger.warning("id_cmd failed: %s", exc)
 
     _register_help_panel()
+    register_inline_builder("help", _help_inline_builder)
+    register_inline_builder("health", _health_inline_builder)
+    register_inline_builder("kill", _kill_inline_builder)
+    register_inline_builder("logs", _logs_inline_builder)
 
-    # ── .help — inline panel via helper bot ───────────────────────────
+    # ── .help — inline panel via Inline Mode ───────────────────────────
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.help$"))
     async def help_cmd(event):
         if not is_owner(event, owner_id):
@@ -362,105 +450,121 @@ def register(client, owner_id: int):
             return
         try:
             await event.delete()
-            await helper.send_message(
-                event.chat_id,
-                _build_main_menu_text(),
-                buttons=_build_main_menu_keyboard(),
-            )
+            await send_inline_panel(client, event.chat_id, "help")
         except Exception as exc:
-            logger.warning("help panel send failed: %s", exc)
+            logger.warning("help inline send failed: %s", exc)
             try:
                 await event.edit(_build_main_menu_text())
             except Exception:
                 pass
 
-    # ── .health — full dashboard ──────────────────────────────────────
+    # ── .health — inline panel via Inline Mode ────────────────────────
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.health$"))
     async def health_cmd(event):
         if not is_owner(event, owner_id):
             return
+        helper = get_client()
+        if helper is None:
+            try:
+                snap = health.snapshot()
+                report = _build_health_report(snap)
+                await _safe_edit(event, report)
+                diagnostics.record_event("health", "snapshot", 0, "SUCCESS")
+            except Exception as exc:
+                logger.warning("health_cmd failed: %s", exc)
+            return
         try:
-            snap = health.snapshot()
-            report = _build_health_report(snap)
-            await _safe_edit(event, report)
+            await event.delete()
+            await send_inline_panel(client, event.chat_id, "health")
             diagnostics.record_event("health", "snapshot", 0, "SUCCESS")
         except Exception as exc:
-            logger.warning("health_cmd failed: %s", exc)
-            diagnostics.record_event("health", "snapshot", 0, "ERROR", str(exc))
+            logger.warning("health inline send failed: %s", exc)
             try:
-                await event.edit(f"⚠️ Health check failed: {exc}")
+                snap = health.snapshot()
+                report = _build_health_report(snap)
+                await _safe_edit(event, report)
             except Exception:
                 pass
 
-    # ── .kill — diagnostic snapshot + recovery ────────────────────────
+    # ── .kill — diagnostic snapshot + recovery (inline panel) ─────────
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.kill$"))
     async def kill_cmd(event):
         if not is_owner(event, owner_id):
             return
-        try:
-            await event.edit("⏳ Collecting diagnostics...")
-        except Exception:
+        helper = get_client()
+        if helper is None:
+            try:
+                await event.edit("⏳ Collecting diagnostics...")
+                snap = health.snapshot()
+                report = diagnostics.build_diagnostic_report(
+                    client, bio_engine, db_client, snap
+                )
+                recovery = await diagnostics.recover_stalled(
+                    client, owner_id, _resolve_tz(), bio_engine, db_client
+                )
+                await _safe_edit(event, report + recovery)
+                diagnostics.record_event("diagnostics", "kill", 0, "SUCCESS")
+            except Exception as exc:
+                logger.warning("kill_cmd failed: %s", exc)
             return
-
         try:
-            snap = health.snapshot()
-            report = diagnostics.build_diagnostic_report(
-                client, bio_engine, db_client, snap
-            )
-            recovery = await diagnostics.recover_stalled(
-                client, owner_id, _resolve_tz(), bio_engine, db_client
-            )
-            await _safe_edit(event, report + recovery)
+            await event.delete()
+            await send_inline_panel(client, event.chat_id, "kill")
             diagnostics.record_event("diagnostics", "kill", 0, "SUCCESS")
         except Exception as exc:
-            logger.warning("kill_cmd failed: %s", exc)
-            diagnostics.record_event("diagnostics", "kill", 0, "ERROR", str(exc))
+            logger.warning("kill inline send failed: %s", exc)
             try:
-                await event.edit(f"⚠️ Kill diagnostic failed: {exc}")
+                await event.edit("⏳ Collecting diagnostics...")
+                snap = health.snapshot()
+                report = diagnostics.build_diagnostic_report(
+                    client, bio_engine, db_client, snap
+                )
+                recovery = await diagnostics.recover_stalled(
+                    client, owner_id, _resolve_tz(), bio_engine, db_client
+                )
+                await _safe_edit(event, report + recovery)
             except Exception:
                 pass
 
-    # ── .logs — diagnostic event viewer ───────────────────────────────
+    # ── .logs — diagnostic event viewer (inline panel) ─────────────────
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.logs(?:\s+(.+))?$"))
     async def logs_cmd(event):
         if not is_owner(event, owner_id):
             return
 
         arg = (event.pattern_match.group(1) or "").strip()
-        limit = 20
-        module = None
-        errors_only = False
-
+        query = "logs"
         if arg:
             if arg.lower() == "errors":
-                errors_only = True
+                query = "logs:errors"
             elif arg.lower().startswith("module "):
-                module = arg[7:].strip()
+                query = "logs"
             elif arg.isdigit():
-                limit = int(arg)
-                if limit < 1:
-                    limit = 20
-                if limit > 500:
-                    limit = 500
-            else:
-                await event.edit(
-                    "⚠️ Usage:\n"
-                    "`.logs` — last 20\n"
-                    "`.logs 50` — last 50\n"
-                    "`.logs errors` — errors only\n"
-                    "`.logs module <name>` — filter by module"
+                query = f"logs:{arg}"
+
+        helper = get_client()
+        if helper is None:
+            limit = 20
+            errors_only = False
+            if arg:
+                if arg.lower() == "errors":
+                    errors_only = True
+                elif arg.lower().startswith("module "):
+                    pass
+                elif arg.isdigit():
+                    limit = min(int(arg), 500)
+            try:
+                events_list = diagnostics.filter_events(
+                    limit=limit, errors_only=errors_only
                 )
-                return
+                text = diagnostics.format_events(events_list)
+                await _safe_edit(event, text)
+            except Exception as exc:
+                logger.warning("logs_cmd failed: %s", exc)
+            return
 
         try:
-            events_list = diagnostics.filter_events(
-                limit=limit, module=module, errors_only=errors_only
-            )
-            text = diagnostics.format_events(events_list)
-            await _safe_edit(event, text)
+            await event.delete()
+            await send_inline_panel(client, event.chat_id, query)
         except Exception as exc:
-            logger.warning("logs_cmd failed: %s", exc)
-            try:
-                await event.edit(f"⚠️ Logs failed: {exc}")
-            except Exception:
-                pass
+            logger.warning("logs inline send failed: %s", exc)

@@ -35,8 +35,15 @@ from backend.bio import engine as bio_engine
 from backend.bot.client import build_client
 from backend.bot.router import register_all
 from backend.db import client as db_client
-from backend.helper.client import build_helper, disconnect_helper
+from backend.helper.client import build_helper, disconnect_helper, get_bot_username
 from backend.helper.panels import register_callback_handlers
+from backend.helper.inline_engine import (
+    register_inline_handler,
+    set_self_client,
+    set_helper_username,
+    set_owner_id,
+)
+from backend.helper.inline_sender import register_input_listener
 from backend.health import (
     check_stale,
     increment_restart,
@@ -209,7 +216,7 @@ async def main() -> None:
     logger.info("[3/5] Registering command handlers")
     register_all(client, cfg["OWNER_ID"], cfg["TZ"])
 
-    # ── Phase 3.5: Helper bot (optional — inline keyboards + callbacks) ───
+    # ── Phase 3.5: Helper bot (optional — Inline Mode + callbacks) ────────
     helper_client = None
     if cfg.get("HELPER_BOT_ENABLED"):
         logger.info("[3.5/5] Starting helper bot")
@@ -217,7 +224,12 @@ async def main() -> None:
             helper_client = await build_helper(cfg["BOT_TOKEN"])
             if helper_client is not None:
                 register_callback_handlers(helper_client, cfg["OWNER_ID"])
-                logger.info("[3.5/5] Helper bot online — inline UI enabled")
+                register_inline_handler(helper_client, cfg["OWNER_ID"])
+                set_self_client(client)
+                set_helper_username(get_bot_username())
+                set_owner_id(cfg["OWNER_ID"])
+                register_input_listener(client, cfg["OWNER_ID"])
+                logger.info("[3.5/5] Helper bot online — Inline Mode enabled")
         except Exception as exc:
             logger.warning("[3.5/5] Helper bot failed: %s — inline UI disabled", exc)
             helper_client = None

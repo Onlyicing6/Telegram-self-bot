@@ -29,6 +29,7 @@ from telethon.tl.types import (
 from backend.bot.handlers.guard import is_owner
 from backend.db import client as db_client
 from backend.bio.engine import _get_tz
+from backend.diagnostics import record_event
 
 logger = logging.getLogger(__name__)
 
@@ -228,13 +229,16 @@ def register(client, owner_id: int, tz_str: str) -> None:
 
         # ── Forward Save ──────────────────────────────────────────────────
         if mode == "f":
+            t0 = asyncio.get_event_loop().time()
             try:
                 raw = await client.forward_messages("me", reply)
                 fwd = _unwrap_forward(raw)
                 saved_chat_id = fwd.chat_id if fwd else None
                 saved_msg_id = fwd.id if fwd else None
+                record_event("save", "forward_messages", (asyncio.get_event_loop().time() - t0) * 1000, "SUCCESS")
             except Exception as exc:
                 logger.error("forward save failed: %s", exc)
+                record_event("save", "forward_messages", 0, "ERROR", str(exc))
                 await event.edit(f"❌ Forward failed: {exc}")
                 return
 
@@ -297,7 +301,9 @@ def register(client, owner_id: int, tz_str: str) -> None:
             buf = io.BytesIO()
             sent = None
             try:
+                t0 = asyncio.get_event_loop().time()
                 await client.download_media(reply, file=buf)
+                record_event("save", "download_media", (asyncio.get_event_loop().time() - t0) * 1000, "SUCCESS")
 
                 buf_size = buf.tell()
                 if buf_size == 0:
@@ -310,14 +316,17 @@ def register(client, owner_id: int, tz_str: str) -> None:
                 force_document = False
 
                 try:
+                    t1 = asyncio.get_event_loop().time()
                     sent = await client.send_file(
                         "me",
                         buf,
                         caption=caption,
                         force_document=force_document,
                     )
+                    record_event("save", "send_file", (asyncio.get_event_loop().time() - t1) * 1000, "SUCCESS")
                 except Exception as exc:
                     logger.error("deep save upload failed: %s", exc)
+                    record_event("save", "send_file", 0, "ERROR", str(exc))
                     await event.edit(f"❌ Upload failed: {exc}")
                     return
 
@@ -325,6 +334,7 @@ def register(client, owner_id: int, tz_str: str) -> None:
                 raise
             except Exception as exc:
                 logger.error("deep save download failed: %s", exc)
+                record_event("save", "download_media", 0, "ERROR", str(exc))
                 await event.edit(f"❌ Download failed: {exc}")
                 return
             finally:

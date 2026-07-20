@@ -6,10 +6,12 @@
 Edit-first policy: error feedback edits the trigger message.
 Successful deletion silently removes all targeted messages (including the command).
 """
+import asyncio
 import logging
 from telethon import events
 from backend.bot.handlers.guard import is_owner
 from backend.db import client as db_client
+from backend.diagnostics import record_event
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,7 @@ def register(client, owner_id: int):
                 return
             start_id = int(rest)
             await event.delete()
+            t0 = asyncio.get_event_loop().time()
             try:
                 msg_ids = []
                 async for msg in client.iter_messages(event.chat_id, min_id=start_id - 1):
@@ -45,8 +48,10 @@ def register(client, owner_id: int):
                         msg_ids = []
                 if msg_ids:
                     await client.delete_messages(event.chat_id, msg_ids)
+                record_event("delete", "del id", (asyncio.get_event_loop().time() - t0) * 1000, "SUCCESS")
             except Exception as exc:
                 logger.error("del id failed: %s", exc)
+                record_event("delete", "del id", 0, "ERROR", str(exc))
 
         elif arg.isdigit():
             n = int(arg)
@@ -54,6 +59,7 @@ def register(client, owner_id: int):
                 await event.edit("⚠️ n must be between 1 and 500.")
                 return
             await event.delete()
+            t0 = asyncio.get_event_loop().time()
             try:
                 msg_ids = []
                 async for msg in client.iter_messages(event.chat_id, limit=n + 5, from_user="me"):
@@ -62,15 +68,20 @@ def register(client, owner_id: int):
                         break
                 if msg_ids:
                     await client.delete_messages(event.chat_id, msg_ids[:n])
+                record_event("delete", "del n", (asyncio.get_event_loop().time() - t0) * 1000, "SUCCESS")
             except Exception as exc:
                 logger.error("del n failed: %s", exc)
+                record_event("delete", "del n", 0, "ERROR", str(exc))
 
         else:
             code = arg.upper()
+            t0 = asyncio.get_event_loop().time()
             try:
                 row = db_client.query_save(code)
+                record_event("database", "query_save", (asyncio.get_event_loop().time() - t0) * 1000, "SUCCESS")
             except Exception as exc:
                 logger.error("del save_code DB query failed: %s", exc)
+                record_event("database", "query_save", 0, "ERROR", str(exc))
                 await event.edit(f"❌ DB error: {exc}")
                 return
             if not row:

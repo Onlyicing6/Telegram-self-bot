@@ -4,12 +4,14 @@
 
 Both use indexed DB queries. Never scan the entire table.
 """
+import asyncio
 import logging
 from datetime import datetime
 from telethon import events
 from backend.bot.handlers.guard import is_owner
 from backend.db import client as db_client
 from backend.bio.engine import _get_tz
+from backend.diagnostics import record_event
 
 logger = logging.getLogger(__name__)
 
@@ -70,10 +72,13 @@ def register(client, owner_id: int, tz_str: str):
         if limit < 1 or limit > 50:
             await event.edit("⚠️ Use a number between 1 and 50.")
             return
+        t0 = asyncio.get_event_loop().time()
         try:
             items = db_client.list_recent_saves(owner_id, limit=limit)
+            record_event("database", "list_recent_saves", (asyncio.get_event_loop().time() - t0) * 1000, "SUCCESS")
         except Exception as exc:
             logger.error("list db error: %s", exc)
+            record_event("database", "list_recent_saves", 0, "ERROR", str(exc))
             await event.edit(f"❌ DB error: {exc}")
             return
         if not items:
@@ -88,10 +93,13 @@ def register(client, owner_id: int, tz_str: str):
         if not is_owner(event, owner_id):
             return
         query = event.pattern_match.group(1).strip()
+        t0 = asyncio.get_event_loop().time()
         try:
             items = db_client.search_saves(owner_id, query, limit=20)
+            record_event("database", "search_saves", (asyncio.get_event_loop().time() - t0) * 1000, "SUCCESS")
         except Exception as exc:
             logger.error("find db error: %s", exc)
+            record_event("database", "search_saves", 0, "ERROR", str(exc))
             await event.edit(f"❌ DB error: {exc}")
             return
         if not items:

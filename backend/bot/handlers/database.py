@@ -3,12 +3,14 @@
 .db stats   — Display database statistics (counts, types, sizes, dates, orphans).
 .db vacuum  — Run orphan cleanup + index optimization. Summary only.
 """
+import asyncio
 import logging
 from datetime import datetime
 from telethon import events
 from backend.bot.handlers.guard import is_owner
 from backend.db import client as db_client
 from backend.bio.engine import _get_tz
+from backend.diagnostics import record_event
 
 logger = logging.getLogger(__name__)
 
@@ -68,10 +70,12 @@ def register(client, owner_id: int, tz_str: str):
 
         if action == "clean":
             await event.edit("🧹 Checking Saved Messages…")
+            t0 = asyncio.get_event_loop().time()
             try:
                 orphan_ids, total = await _find_orphans(client, owner_id)
                 removed = db_client.cleanup_orphans(owner_id, orphan_ids)
                 remaining = total - removed
+                record_event("database", "clean orphans", (asyncio.get_event_loop().time() - t0) * 1000, "SUCCESS", f"{removed}/{total}")
                 await event.edit(
                     f"🧹 **Database cleanup complete**\n\n"
                     f"Removed: `{removed}` orphan rows\n"
@@ -82,10 +86,12 @@ def register(client, owner_id: int, tz_str: str):
                 })
             except Exception as exc:
                 logger.error("db clean failed: %s", exc)
+                record_event("database", "clean orphans", 0, "ERROR", str(exc))
                 await event.edit(f"❌ Cleanup error: {exc}")
                 await db_client.log(owner_id, "ERROR", f"DB clean failed: {exc}", {})
 
         elif action == "stats":
+            t0 = asyncio.get_event_loop().time()
             try:
                 stats = db_client.get_stats(owner_id)
                 total = stats["total"]
@@ -115,16 +121,20 @@ def register(client, owner_id: int, tz_str: str):
 
                 await event.edit("\n".join(lines))
                 await db_client.log(owner_id, "INFO", f"DB stats: {total} items", stats)
+                record_event("database", "stats", (asyncio.get_event_loop().time() - t0) * 1000, "SUCCESS")
             except Exception as exc:
                 logger.error("db stats failed: %s", exc)
+                record_event("database", "stats", 0, "ERROR", str(exc))
                 await event.edit(f"❌ Stats error: {exc}")
 
         elif action == "vacuum":
             await event.edit("⚙️ Vacuuming…")
+            t0 = asyncio.get_event_loop().time()
             try:
                 orphan_ids, total = await _find_orphans(client, owner_id)
                 removed = db_client.cleanup_orphans(owner_id, orphan_ids)
                 remaining = total - removed
+                record_event("database", "vacuum", (asyncio.get_event_loop().time() - t0) * 1000, "SUCCESS", f"{removed}/{total}")
 
                 await event.edit(
                     f"⚙️ **Vacuum complete**\n\n"
@@ -137,5 +147,6 @@ def register(client, owner_id: int, tz_str: str):
                 })
             except Exception as exc:
                 logger.error("db vacuum failed: %s", exc)
+                record_event("database", "vacuum", 0, "ERROR", str(exc))
                 await event.edit(f"❌ Vacuum error: {exc}")
                 await db_client.log(owner_id, "ERROR", f"DB vacuum failed: {exc}", {})

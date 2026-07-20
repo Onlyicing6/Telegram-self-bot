@@ -21,6 +21,7 @@ from telethon.errors import FloodWaitError
 from telethon.tl.functions.account import UpdateProfileRequest
 
 from backend.db import client as db_client
+from backend.diagnostics import record_event
 
 logger = logging.getLogger(__name__)
 
@@ -82,19 +83,23 @@ async def _cron_loop(client, owner_id: int, tz_str: str) -> None:
             if new_bio == (last_bio or ""):
                 continue
 
+            t0 = asyncio.get_event_loop().time()
             try:
                 await asyncio.wait_for(
                     client(UpdateProfileRequest(about=new_bio)),
                     timeout=_API_TIMEOUT,
                 )
+                record_event("bio", "UpdateProfileRequest", (asyncio.get_event_loop().time() - t0) * 1000, "SUCCESS")
             except asyncio.TimeoutError:
                 logger.warning(
                     "Bio API call timed out (%ds) — will retry next minute",
                     _API_TIMEOUT,
                 )
+                record_event("bio", "UpdateProfileRequest", _API_TIMEOUT * 1000, "TIMEOUT")
                 continue
             except FloodWaitError as fwe:
                 logger.warning("Bio FloodWait %ds — sleeping.", fwe.seconds)
+                record_event("bio", "UpdateProfileRequest", 0, "FLOOD_WAIT", f"{fwe.seconds}s")
                 await asyncio.sleep(fwe.seconds + 1)
                 continue
             except asyncio.CancelledError:
@@ -104,6 +109,7 @@ async def _cron_loop(client, owner_id: int, tz_str: str) -> None:
                     "Bio API error (retrying next minute): type=%s repr=%r",
                     type(api_exc).__name__, api_exc,
                 )
+                record_event("bio", "UpdateProfileRequest", 0, "ERROR", str(api_exc))
                 continue
 
             db_client.update_bio_state(owner_id, {
@@ -140,6 +146,7 @@ def start_cron(client, owner_id: int, tz_str: str) -> None:
     if _task and not _task.done():
         return
     _task = asyncio.create_task(_supervised_cron(client, owner_id, tz_str))
+    record_event("bio", "start_cron", 0, "SUCCESS")
 
 
 def stop_cron() -> None:
@@ -147,6 +154,7 @@ def stop_cron() -> None:
     if _task and not _task.done():
         _task.cancel()
     _task = None
+    record_event("bio", "stop_cron", 0, "SUCCESS")
 
 
 def is_running() -> bool:

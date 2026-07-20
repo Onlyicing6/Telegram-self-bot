@@ -16,6 +16,8 @@ import random
 import string
 from datetime import datetime, timedelta, timezone
 
+from backend.diagnostics import record_event
+
 logger = logging.getLogger(__name__)
 
 _client = None
@@ -144,20 +146,18 @@ def insert_save(data: dict) -> dict | None:
     if db:
         try:
             result = db.table("saved_items").insert(data).execute()
+            record_event("database", "insert saved_items", 0, "SUCCESS")
             return result.data[0] if result.data else None
         except Exception as exc:
             logger.warning("Supabase insert_save failed (%s) — using fallback.", exc)
+            record_event("database", "insert saved_items", 0, "ERROR", str(exc))
     data["id"] = len(_fallback["saved_items"]) + 1
     _fallback["saved_items"].append(data)
     return data
 
 
 def query_save(save_code: str) -> dict | None:
-    """Look up a saved item by short_code OR legacy save_code.
-
-    Tries short_code first (new format), then falls back to save_code
-    (legacy SV-NNNNNN) so old commands keep working.
-    """
+    """Look up a saved item by short_code OR legacy save_code."""
     code = save_code.upper()
     db = get_db()
     if db:
@@ -169,9 +169,11 @@ def query_save(save_code: str) -> dict | None:
                 .maybe_single()
                 .execute()
             )
+            record_event("database", "select saved_items", 0, "SUCCESS")
             return result.data
         except Exception as exc:
             logger.warning("Supabase query_save failed (%s) — using fallback.", exc)
+            record_event("database", "select saved_items", 0, "ERROR", str(exc))
     for item in _fallback["saved_items"]:
         sc = (item.get("short_code") or "").upper()
         lc = (item.get("save_code") or "").upper()

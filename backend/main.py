@@ -44,6 +44,7 @@ from backend.health import (
     update_heartbeat,
 )
 from backend.web.app import app as web_app
+from backend.diagnostics import record_event
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -69,10 +70,12 @@ async def _heartbeat(shutdown: asyncio.Event) -> None:
         try:
             update_heartbeat()
             check_stale()
+            record_event("watchdog", "heartbeat", 0, "SUCCESS")
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.warning("Heartbeat error: %s", exc)
+            record_event("watchdog", "heartbeat", 0, "ERROR", str(exc))
         await asyncio.sleep(_HEARTBEAT_INTERVAL)
 
 
@@ -100,8 +103,10 @@ async def _supervise_telethon(client, shutdown: asyncio.Event) -> None:
             raise
         except Exception as exc:
             logger.warning("Telethon run_until_disconnected error: %s", exc)
+            record_event("telethon", "run_until_disconnected", 0, "ERROR", str(exc))
 
         set_telethon_connected(False)
+        record_event("telethon", "disconnected", 0, "WARNING")
 
         if shutdown.is_set():
             break
@@ -112,13 +117,16 @@ async def _supervise_telethon(client, shutdown: asyncio.Event) -> None:
             await client.connect()
             if not await client.is_user_authorized():
                 logger.error("Reconnect: session not authorized — will retry")
+                record_event("telethon", "reconnect", 0, "ERROR", "not authorized")
                 continue
             set_telethon_connected(True)
+            record_event("telethon", "reconnect", 0, "SUCCESS")
             logger.info("Telethon reconnected successfully")
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.error("Reconnect failed: %s — will retry in %ds", exc, _RECONNECT_DELAY)
+            record_event("telethon", "reconnect", 0, "ERROR", str(exc))
     set_supervisor_ok(False)
 
 
@@ -136,8 +144,10 @@ async def _watchdog(client, shutdown: asyncio.Event) -> None:
                 continue
             try:
                 await asyncio.wait_for(client.get_me(), timeout=_WATCHDOG_TIMEOUT)
+                record_event("watchdog", "health check", 0, "SUCCESS")
             except asyncio.TimeoutError:
                 logger.warning("Watchdog: health check timed out — forcing disconnect")
+                record_event("watchdog", "health check", _WATCHDOG_TIMEOUT * 1000, "TIMEOUT")
                 try:
                     await client.disconnect()
                 except Exception:
@@ -146,6 +156,7 @@ async def _watchdog(client, shutdown: asyncio.Event) -> None:
                 raise
             except Exception as exc:
                 logger.warning("Watchdog: health check failed (%s) — forcing disconnect", exc)
+                record_event("watchdog", "health check", 0, "ERROR", str(exc))
                 try:
                     await client.disconnect()
                 except Exception:

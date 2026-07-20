@@ -4,6 +4,7 @@
 .help  — Full command reference.
 .health — Internal health report from backend/health.py.
 .kill   — Diagnostic snapshot + stalled-task recovery.
+.logs   — View recent diagnostic events (black box).
 """
 import logging
 import os
@@ -66,6 +67,10 @@ _HELP = (
     "\n"
     "🔧 **Diagnostics**\n"
     "  `.kill`   — Snapshot + stalled-task recovery\n"
+    "  `.logs`   — Recent events (last 20)\n"
+    "  `.logs 50`        — Last 50 events\n"
+    "  `.logs errors`    — Errors only\n"
+    "  `.logs module <m>` — Filter by module\n"
     "━━━━━━━━━━━━"
 )
 
@@ -123,6 +128,16 @@ def _build_health_report(snap):
     return "\n".join(lines)
 
 
+async def _safe_edit(event, text: str) -> None:
+    """Edit a message, splitting if it exceeds Telegram's limit."""
+    parts = diagnostics.split_message(text)
+    for i, part in enumerate(parts):
+        if i == 0:
+            await event.edit(part)
+        else:
+            await event.reply(part)
+
+
 def register(client, owner_id: int):
 
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.ping$"))
@@ -155,7 +170,7 @@ def register(client, owner_id: int):
         if not is_owner(event, owner_id):
             return
         try:
-            await event.edit(_HELP)
+            await _safe_edit(event, _HELP)
         except Exception as exc:
             logger.warning("help edit failed: %s", exc)
 
@@ -167,13 +182,24 @@ def register(client, owner_id: int):
             snap = health.snapshot()
             report = _build_health_report(snap)
             await event.edit(report)
+            diagnostics.record_event("health", "snapshot", 0, "SUCCESS")
         except Exception as exc:
             logger.warning("health_cmd failed: %s", exc)
+            diagnostics.record_event("health", "snapshot", 0, "ERROR", str(exc))
+            try:
+                await event.edit(f"⚠️ Health check failed: {exc}")
+            except Exception:
+                pass
 
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.kill$"))
     async def kill_cmd(event):
         if not is_owner(event, owner_id):
             return
+        try:
+            await event.edit("⏳ Collecting diagnostics...")
+        except Exception:
+            return
+
         try:
             snap = health.snapshot()
             report = diagnostics.build_diagnostic_report(
@@ -182,10 +208,56 @@ def register(client, owner_id: int):
             recovery = await diagnostics.recover_stalled(
                 client, owner_id, _resolve_tz(), bio_engine, db_client
             )
-            await event.edit(report + recovery)
+            await _safe_edit(event, report + recovery)
+            diagnostics.record_event("diagnostics", "kill", 0, "SUCCESS")
         except Exception as exc:
             logger.warning("kill_cmd failed: %s", exc)
+            diagnostics.record_event("diagnostics", "kill", 0, "ERROR", str(exc))
             try:
                 await event.edit(f"⚠️ Kill diagnostic failed: {exc}")
+            except Exception:
+                pass
+
+    @client.on(events.NewMessage(outgoing=True, pattern=r"^\.logs(?:\s+(.+))?$"))
+    async def logs_cmd(event):
+        if not is_owner(event, owner_id):
+            return
+
+        arg = (event.pattern_match.group(1) or "").strip()
+        limit = 20
+        module = None
+        errors_only = False
+
+        if arg:
+            if arg.lower() == "errors":
+                errors_only = True
+            elif arg.lower().startswith("module "):
+                module = arg[7:].strip()
+            elif arg.isdigit():
+                limit = int(arg)
+                if limit < 1:
+                    limit = 20
+                if limit > 500:
+                    limit = 500
+            else:
+                await event.edit(
+                    "⚠️ Usage:\n"
+                    "`.logs` — last 20\n"
+                    "`.logs 50` — last 50\n"
+                    "`.logs errors` — errors only\n"
+                    "`.logs module <name>` — filter by module"
+                )
+                return
+
+        try:
+            events_list = diagnostics.filter_events(
+                limit=limit, module=module, errors_only=errors_only
+            )
+            text = diagnostics.format_events(events_list)
+            await _safe_edit(event, text)
+        except Exception as exc:
+            logger.warning("logs_cmd failed: %s", exc)
+            try:
+                await event.edit(f"⚠️ Logs failed: {exc}")
             except Exception:
                 pass

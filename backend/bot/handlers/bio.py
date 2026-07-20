@@ -18,6 +18,7 @@ from telethon import events
 from backend.bio import engine as bio_engine
 from backend.bot.handlers.guard import is_owner
 from backend.db import client as db_client
+from backend.diagnostics import record_event
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,7 @@ def register(client, owner_id: int, tz_str: str):
                 await event.edit(f"❌ DB error: {exc}")
                 return
             bio_engine.start_cron(client, owner_id, tz_str)
+            record_event("bio", "cron on", 0, "SUCCESS")
             preview = bio_engine.render_bio(
                 state.get("template", "🕒 {time} | 💭 {mood}"),
                 state.get("mood", "😊"),
@@ -116,6 +118,7 @@ def register(client, owner_id: int, tz_str: str):
                 await event.edit(f"❌ DB error: {exc}")
                 return
             bio_engine.stop_cron()
+            record_event("bio", "cron off", 0, "SUCCESS")
             await event.edit("⏹ Bio cron **OFF**")
 
         elif arg == "show":

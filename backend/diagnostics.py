@@ -1,30 +1,27 @@
 """
-Diagnostics module for .kill command.
+Diagnostics module — event history (black box) + .kill diagnostic snapshot.
 
 Provides:
-  - An in-memory ring buffer of recent bot events (min 100 entries)
-  - A complete diagnostic snapshot of all subsystems
+  - An in-memory circular event log (500 entries, automatic overwrite)
+  - Event recording from every subsystem (Telethon, Bio, DB, Save, etc.)
+  - A complete diagnostic snapshot of all subsystems for .kill
   - Stalled-task detection and selective recovery
+  - Event filtering and formatting for .logs
 
-All snapshot collection is synchronous and non-blocking — it reads
-module-level state only, never performs I/O.
+No database, no disk writes. All snapshot collection is synchronous and
+non-blocking — it reads module-level state only, never performs I/O.
 """
 import asyncio
 import logging
 import os
 import sys
-import time
-import tracemalloc
 from collections import deque
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-_RING_SIZE = 150
+_RING_SIZE = 500
 _event_ring: deque = deque(maxlen=_RING_SIZE)
-
-_STALL_THRESHOLD_S = 120.0
-_HEARTBEAT_STALE_S = 15.0
 
 _PROTECTED_TASK_NAMES = {
     "lifeos-tg-supervisor",
@@ -33,14 +30,17 @@ _PROTECTED_TASK_NAMES = {
     "lifeos-web",
 }
 
+_TG_MSG_LIMIT = 4096
 
-def record_event(module: str, action: str, duration_ms: float, result: str) -> None:
+
+def record_event(module: str, action: str, duration_ms: float, result: str, details: str | None = None) -> None:
     entry = {
         "ts": datetime.now(timezone.utc),
         "module": module,
         "action": action,
         "duration_ms": round(duration_ms, 1),
         "result": result,
+        "details": details,
     }
     _event_ring.append(entry)
 
@@ -49,9 +49,10 @@ def get_events() -> list:
     return list(_event_ring)
 
 
-def _format_duration(seconds: float) -> str:
-    if seconds < 1:
-        return f"{int(seconds * 1000)}ms"
+def _format_duration(ms: float) -> str:
+    if ms < 1000:
+        return f"{int(ms)}ms"
+    seconds = ms / 1000
     if seconds < 60:
         return f"{seconds:.1f}s"
     minutes = int(seconds // 60)
@@ -59,14 +60,52 @@ def _format_duration(seconds: float) -> str:
     return f"{minutes}m {secs}s"
 
 
-def _format_uptime(seconds: float) -> str:
-    if seconds < 0:
-        return "unknown"
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    if hours > 0:
-        return f"{hours}h {minutes}m"
-    return f"{minutes}m"
+def _format_event(e: dict) -> str:
+    ts = e["ts"].strftime("%H:%M:%S")
+    dur = _format_duration(e["duration_ms"])
+    line = f"{ts} | {e['module']} | {e['action']} | {dur} | {e['result']}"
+    if e.get("details"):
+        line += f" | {e['details']}"
+    return line
+
+
+def filter_events(limit: int = 20, module: str | None = None, errors_only: bool = False) -> list:
+    events = get_events()
+    if errors_only:
+        events = [e for e in events if e["result"] not in ("SUCCESS",)]
+    if module:
+        events = [e for e in events if e["module"].lower() == module.lower()]
+    events.reverse()
+    return events[:limit]
+
+
+def format_events(events: list) -> str:
+    if not events:
+        return "📭 No events recorded."
+    lines = [f"📋 **Event Log** ({len(events)})", ""]
+    for e in events:
+        lines.append(f"```\n{_format_event(e)}\n```")
+    return "\n".join(lines)
+
+
+def split_message(text: str, limit: int = _TG_MSG_LIMIT) -> list[str]:
+    if len(text) <= limit:
+        return [text]
+    parts = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= limit:
+            parts.append(remaining)
+            break
+        chunk = remaining[:limit]
+        last_nl = chunk.rfind("\n")
+        if last_nl > limit // 2:
+            split_at = last_nl
+        else:
+            split_at = limit
+        parts.append(remaining[:split_at])
+        remaining = remaining[split_at:].lstrip("\n")
+    return parts
 
 
 def _get_task_state(task: asyncio.Task) -> str:
@@ -105,7 +144,6 @@ def _collect_process_section() -> list:
         usage = resource.getrusage(resource.RUSAGE_SELF)
         mem_mb = usage.ru_maxrss / 1024
         cpu_s = usage.ru_utime + usage.ru_stime
-        lines.append(f"• Uptime: see Runtime below")
         lines.append(f"• PID: {os.getpid()}")
         lines.append(f"• Memory: {mem_mb:.1f} MB (max RSS)")
         lines.append(f"• CPU: {cpu_s:.2f}s user+sys")
@@ -125,9 +163,6 @@ def _collect_telethon_section(client) -> list:
     except Exception:
         lines.append("• Connected: unknown")
         lines.append("• Authorized: unknown")
-    lines.append("• Last received update: not tracked")
-    lines.append("• Last successful API request: not tracked")
-    lines.append("• Pending requests: not tracked")
     return lines
 
 
@@ -135,7 +170,6 @@ def _collect_supervisor_section(health_snap: dict) -> list:
     lines = ["=== SUPERVISOR ==="]
     tasks = asyncio.all_tasks()
     lines.append(f"• Running tasks: {len(tasks)}")
-    lines.append(f"• Restart counters: not tracked")
     lines.append(f"• Watchdog: {'Running' if health_snap.get('supervisor_ok') else 'Stopped'}")
     hb_age = health_snap.get("heartbeat_age_s")
     if hb_age is not None:
@@ -148,29 +182,17 @@ def _collect_supervisor_section(health_snap: dict) -> list:
 def _collect_bio_section(bio_engine) -> list:
     lines = ["=== BIO ENGINE ==="]
     lines.append(f"• Running: {bio_engine.is_running()}")
-    lines.append("• Last successful update: not tracked")
-    lines.append("• Last exception: not tracked")
-    lines.append("• Next scheduled execution: next minute boundary")
     return lines
 
 
 def _collect_database_section(db_client) -> list:
     lines = ["=== DATABASE ==="]
     lines.append(f"• Available: {db_client.is_available()}")
-    lines.append("• Last query: not tracked")
-    lines.append("• Query duration: not tracked")
-    lines.append("• Pending DB operations: not tracked")
-    lines.append("• Last successful response: not tracked")
     return lines
 
 
 def _collect_save_engine_section() -> list:
-    lines = ["=== SAVE ENGINE ==="]
-    lines.append("• Current save jobs: 0")
-    lines.append("• Current retrieve jobs: 0")
-    lines.append("• Pending uploads: 0")
-    lines.append("• Pending downloads: 0")
-    return lines
+    return ["=== SAVE ENGINE ===", "• (no active jobs tracked)"]
 
 
 def _collect_event_loop_section() -> list:
@@ -189,18 +211,6 @@ def _collect_event_loop_section() -> list:
     return lines
 
 
-def _collect_active_locks_section() -> list:
-    lines = ["=== ACTIVE LOCKS ==="]
-    lines.append("• (lock introspection not available in Python asyncio)")
-    return lines
-
-
-def _collect_background_queues_section() -> list:
-    lines = ["=== BACKGROUND QUEUES ==="]
-    lines.append("• No background queues in use")
-    return lines
-
-
 def _collect_last_events_section() -> list:
     lines = ["=== LAST EVENTS ==="]
     events = get_events()
@@ -208,9 +218,7 @@ def _collect_last_events_section() -> list:
         lines.append("• (no events recorded)")
         return lines
     for e in events[-20:]:
-        ts = e["ts"].strftime("%H:%M:%S")
-        dur = _format_duration(e["duration_ms"] / 1000)
-        lines.append(f"• {ts} | {e['module']} | {e['action']} | {dur} | {e['result']}")
+        lines.append(f"• {_format_event(e)}")
     return lines
 
 
@@ -229,10 +237,6 @@ def build_diagnostic_report(client, bio_engine, db_client, health_snap: dict) ->
     sections.extend(_collect_save_engine_section())
     sections.append("")
     sections.extend(_collect_event_loop_section())
-    sections.append("")
-    sections.extend(_collect_active_locks_section())
-    sections.append("")
-    sections.extend(_collect_background_queues_section())
     sections.append("")
     sections.extend(_collect_last_events_section())
     return "\n".join(sections)

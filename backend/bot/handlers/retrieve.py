@@ -4,10 +4,12 @@
 
 All three preview aliases share one execution path. No duplicated logic.
 """
+import asyncio
 import logging
 from telethon import events
 from backend.bot.handlers.guard import is_owner
 from backend.db import client as db_client
+from backend.diagnostics import record_event
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +39,13 @@ def register(client, owner_id: int):
         if not is_owner(event, owner_id):
             return
         save_code = event.pattern_match.group(1).upper()
+        t0 = asyncio.get_event_loop().time()
         try:
             row = db_client.query_save(save_code)
+            record_event("database", "query_save", (asyncio.get_event_loop().time() - t0) * 1000, "SUCCESS")
         except Exception as exc:
             logger.error("preview db error: %s", exc)
+            record_event("database", "query_save", 0, "ERROR", str(exc))
             await event.edit(f"❌ DB error: {exc}")
             return
         if not row:
@@ -56,10 +61,13 @@ def register(client, owner_id: int):
         if not is_owner(event, owner_id):
             return
         save_code = event.pattern_match.group(1).upper()
+        t0 = asyncio.get_event_loop().time()
         try:
             row = db_client.query_save(save_code)
+            record_event("database", "query_save", (asyncio.get_event_loop().time() - t0) * 1000, "SUCCESS")
         except Exception as exc:
             logger.error("send db error: %s", exc)
+            record_event("database", "query_save", 0, "ERROR", str(exc))
             await event.edit(f"❌ DB error: {exc}")
             return
         if not row:
@@ -73,11 +81,14 @@ def register(client, owner_id: int):
             return
 
         target_chat = event.chat_id
+        t1 = asyncio.get_event_loop().time()
         try:
             await client.forward_messages(target_chat, saved_msg_id, saved_chat_id)
+            record_event("retrieve", "forward_messages", (asyncio.get_event_loop().time() - t1) * 1000, "SUCCESS")
             await event.delete()
         except Exception as exc:
             logger.error("send forward failed: %s", exc)
+            record_event("retrieve", "forward_messages", 0, "ERROR", str(exc))
             await event.edit(f"❌ Forward failed: {exc}")
             return
 

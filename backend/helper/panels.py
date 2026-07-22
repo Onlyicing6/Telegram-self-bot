@@ -1,27 +1,27 @@
 """
 Inline panel system for the helper bot.
 
-Architecture (Telegram Inline Mode):
-  1. Self-bot calls ``client.inline_query(@helper_bot, query)``
-  2. Helper bot answers the InlineQuery with one or more results
-  3. Self-bot clicks the first result to insert it into the chat
-  4. The message appears from the OWNER'S account (with "via @bot")
-  5. Callback button presses route back to the helper bot
-
-The helper bot NEVER sends messages directly into chats. All UI is
-delivered via Inline Mode so it works everywhere — Saved Messages,
-private chats, and groups — without the bot needing to be a member.
-
 Provides:
-  - ``send_inline_panel(self_client, event, query)`` — the single
-    reusable entry point for all inline panels. Performs the full
-    inline-query → click → delete-trigger flow with proper ordering
-    and error handling.
-  - ``register_inline_query(helper_client)`` — registers the
-    InlineQuery handler on the helper bot.
-  - ``InlinePanelBuilder`` — builds inline keyboards.
-  - ``register_panel / get_panel`` — callback handler registry.
-  - ``register_callback_handlers`` — wires the callback router.
+  - ``InlinePanelBuilder`` — builds inline keyboards with rows of buttons.
+  - ``register_panel(panel_id, handler)`` — registers a callback handler
+    for a panel ID.
+  - ``get_panel(panel_id)`` — retrieves a registered panel handler.
+  - ``register_action(action_id, handler)`` — registers an action handler
+    for immediate execution (Type A commands).
+  - ``register_input(panel_id, input_id, handler, prompt)`` — registers
+    an input handler for Type B commands requiring user text input.
+  - ``register_callback_handlers(client, owner_id)`` — wires the callback
+    query router onto the helper bot client.
+
+Callback data format:
+  - Panel navigation:  ``panel:<panel_id>:<extra>``
+  - Action execution:  ``action:<action_id>:<extra>``
+  - Input request:    ``input:<panel_id>:<input_id>``
+
+The callback router dispatches based on the prefix. Panel handlers
+edit the inline message in-place. Action handlers execute logic and
+then edit the message with the result. Input handlers set a pending
+input state and edit the message to show a prompt.
 """
 import logging
 from typing import Awaitable, Callable, Any
@@ -30,16 +30,18 @@ from telethon import events
 from telethon.tl.custom import Button
 
 from backend.bot.handlers.guard import is_owner
-from backend.helper.client import get_bot_username
+from backend.helper.context import truncate_callback_data
+from backend.helper.input_state import set_pending
 
 logger = logging.getLogger(__name__)
 
 PanelHandler = Callable[[events.CallbackQuery.Event, str], Awaitable[None]]
-_panels: dict[str, PanelHandler] = {}
+ActionHandler = Callable[[events.CallbackQuery.Event, str], Awaitable[str]]
+InputConfig = dict[str, Any]
 
-# Registry of inline-query builders: query_string -> async callable that
-# returns (text, buttons) for the InlineQueryResultArticle.
-_inline_builders: dict[str, Callable[[], Awaitable[tuple[str, list]]]] = {}
+_panels: dict[str, PanelHandler] = {}
+_actions: dict[str, ActionHandler] = {}
+_inputs: dict[str, dict[str, InputConfig]] = {}
 
 
 class InlinePanelBuilder:
@@ -49,11 +51,11 @@ class InlinePanelBuilder:
         self._rows: list[list[Any]] = []
 
     def add_row(self, text: str, callback_data: str) -> "InlinePanelBuilder":
-        self._rows.append([Button.inline(text, callback_data)])
+        self._rows.append([Button.inline(text, truncate_callback_data(callback_data))])
         return self
 
     def add_buttons(self, *buttons: tuple[str, str]) -> "InlinePanelBuilder":
-        row = [Button.inline(text, data) for text, data in buttons]
+        row = [Button.inline(text, truncate_callback_data(data)) for text, data in buttons]
         self._rows.append(row)
         return self
 
@@ -66,117 +68,52 @@ class InlinePanelBuilder:
 
 
 def register_panel(panel_id: str, handler: PanelHandler) -> None:
-    """Register a callback handler for a panel ID."""
     _panels[panel_id] = handler
+    logger.debug("Panel registered: %s", panel_id)
 
 
 def get_panel(panel_id: str) -> PanelHandler | None:
     return _panels.get(panel_id)
 
 
-def register_inline_builder(
-    query: str, builder: Callable[[], Awaitable[tuple[str, list]]]
-) -> None:
-    """Register an inline-query result builder for a query string."""
-    _inline_builders[query] = builder
+def register_action(action_id: str, handler: ActionHandler) -> None:
+    """Register an action handler for Type A (immediate execution) commands.
 
-
-async def send_inline_panel(self_client, event, query: str) -> bool:
+    The handler receives the callback event and extra data, and returns
+    a result string to display in the panel.
     """
-    Reusable helper: send an inline panel via Telegram Inline Mode.
+    _actions[action_id] = handler
+    logger.debug("Action registered: %s", action_id)
 
-    Flow (strict ordering — trigger is deleted ONLY on success):
-      1. client.inline_query(@helper_bot, query)
-      2. Verify results count > 0
-      3. Click the first result to insert into the current chat
-      4. Delete the original command message
 
-    Returns True if the panel was successfully inserted, False otherwise.
-    On any failure the original command is left intact (not deleted) and
-    the caller is responsible for falling back to ``event.edit(...)``.
+def get_action(action_id: str) -> ActionHandler | None:
+    return _actions.get(action_id)
+
+
+def register_input(panel_id: str, input_id: str, handler: InputConfig) -> None:
+    """Register an input handler for Type B (requires user input) commands.
+
+    The ``handler`` dict contains:
+      - ``handler``: async callable(text, chat_id, msg_id) -> None
+      - ``prompt``: str to display when waiting for input
     """
-    bot_username = get_bot_username()
-    if not bot_username:
-        logger.warning("INLINE PANEL: no helper bot username — cannot query")
-        return False
-
-    logger.info("INLINE QUERY SENT — bot=@%s query=%s chat=%s",
-                bot_username, query, event.chat_id)
-
-    try:
-        results = await self_client.inline_query(bot_username, query)
-    except Exception as exc:
-        logger.error("INLINE QUERY FAILED — %s: %s", type(exc).__name__, exc)
-        return False
-
-    count = len(results) if results else 0
-    logger.info("INLINE RESULTS COUNT — %d", count)
-
-    if not results:
-        logger.warning("INLINE QUERY returned 0 results — falling back")
-        return False
-
-    logger.info("INLINE RESULT SELECTED — index=0")
-    try:
-        await results[0].click(event.chat_id)
-    except Exception as exc:
-        logger.error("INLINE RESULT SEND FAILED — %s: %s", type(exc).__name__, exc)
-        return False
-
-    logger.info("INLINE RESULT SENT — chat=%s", event.chat_id)
-
-    try:
-        await event.delete()
-        logger.info("TRIGGER DELETED — msg_id=%s", event.message.id)
-    except Exception as exc:
-        logger.warning("TRIGGER DELETE FAILED — %s: %s", type(exc).__name__, exc)
-
-    return True
+    if panel_id not in _inputs:
+        _inputs[panel_id] = {}
+    _inputs[panel_id][input_id] = handler
+    logger.debug("Input registered: %s/%s", panel_id, input_id)
 
 
-def register_inline_query(helper_client) -> None:
-    """
-    Register the InlineQuery handler on the helper bot.
-
-    When the self-bot calls ``client.inline_query(@helper_bot, query)``,
-    the helper bot looks up the registered builder for that query string
-    and answers with a single InlineQueryResultArticle containing the
-    panel text and buttons.
-    """
-
-    @helper_client.on(events.InlineQuery())
-    async def _inline_query_handler(event):
-        query = event.text.strip().lower()
-        builder = _inline_builders.get(query)
-        if builder is None:
-            return
-
-        try:
-            text, buttons = await builder()
-        except Exception as exc:
-            logger.error("INLINE BUILDER ERROR for query '%s' — %s: %s",
-                         query, type(exc).__name__, exc)
-            return
-
-        try:
-            article = await event.builder.article(
-                title="LifeOS Panel",
-                description="Tap to open",
-                text=text,
-                buttons=buttons,
-            )
-            await event.answer([article])
-        except Exception as exc:
-            logger.error("INLINE ANSWER FAILED — %s: %s", type(exc).__name__, exc)
+def get_input(panel_id: str, input_id: str) -> InputConfig | None:
+    return _inputs.get(panel_id, {}).get(input_id)
 
 
 def register_callback_handlers(client, owner_id: int) -> None:
-    """
-    Wire the callback query router onto the helper bot client.
+    """Wire the callback query router onto the helper bot client.
 
-    Every callback query is checked against ``is_owner``. The callback data
-    must start with ``panel:`` followed by the panel ID and optional extra
-    data separated by ``:``.
+    Dispatches based on callback data prefix:
+      - ``panel:`` → panel navigation handler
+      - ``action:`` → action execution handler (Type A)
+      - ``input:`` → input state setup (Type B)
     """
 
     @client.on(events.CallbackQuery())
@@ -185,20 +122,84 @@ def register_callback_handlers(client, owner_id: int) -> None:
             return
 
         data = event.data.decode("utf-8") if event.data else ""
-        if not data.startswith("panel:"):
-            return
-
-        remainder = data[6:]
-        parts = remainder.split(":", 1)
-        panel_id = parts[0]
-        extra = parts[1] if len(parts) > 1 else ""
-
-        handler = get_panel(panel_id)
-        if handler is None:
-            logger.warning("No panel registered for id: %s", panel_id)
+        if not data:
             return
 
         try:
-            await handler(event, extra)
+            if data.startswith("panel:"):
+                await _handle_panel(event, data[6:])
+            elif data.startswith("action:"):
+                await _handle_action(event, data[7:])
+            elif data.startswith("input:"):
+                await _handle_input(event, data[6:], owner_id)
         except Exception as exc:
-            logger.error("Panel handler '%s' error: %s", panel_id, exc)
+            logger.error("Callback router error (data=%s): %s", data, exc)
+
+
+async def _handle_panel(event, remainder: str) -> None:
+    parts = remainder.split(":", 1)
+    panel_id = parts[0]
+    extra = parts[1] if len(parts) > 1 else ""
+
+    handler = get_panel(panel_id)
+    if handler is None:
+        logger.warning("No panel registered for id: %s", panel_id)
+        return
+
+    await handler(event, extra)
+
+
+async def _handle_action(event, remainder: str) -> None:
+    parts = remainder.split(":", 1)
+    action_id = parts[0]
+    extra = parts[1] if len(parts) > 1 else ""
+
+    handler = get_action(action_id)
+    if handler is None:
+        logger.warning("No action registered for id: %s", action_id)
+        return
+
+    result = await handler(event, extra)
+    if result is None:
+        return
+    if isinstance(result, tuple):
+        text, buttons = result
+    else:
+        text, buttons = result, []
+    if text:
+        try:
+            await event.edit(text, buttons=buttons)
+        except Exception as exc:
+            logger.warning("Action result edit failed: %s", exc)
+
+
+async def _handle_input(event, remainder: str, owner_id: int) -> None:
+    parts = remainder.split(":", 1)
+    panel_id = parts[0]
+    input_id = parts[1] if len(parts) > 1 else ""
+
+    input_cfg = get_input(panel_id, input_id)
+    if input_cfg is None:
+        logger.warning("No input registered: %s/%s", panel_id, input_id)
+        return
+
+    prompt = input_cfg.get("prompt", "Enter input:")
+    handler = input_cfg.get("handler")
+
+    if handler is None:
+        return
+
+    chat_id = event.chat_id
+    inline_msg_id = event.msg_id or 0
+    set_pending(
+        owner_id, panel_id, handler, chat_id, prompt,
+        inline_chat_id=chat_id, inline_msg_id=inline_msg_id,
+    )
+
+    builder = InlinePanelBuilder()
+    builder.add_row("Cancel", f"panel:{panel_id}")
+
+    try:
+        await event.edit(prompt, buttons=builder.build())
+    except Exception as exc:
+        logger.warning("Input prompt edit failed: %s", exc)

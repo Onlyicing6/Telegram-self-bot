@@ -17,8 +17,7 @@ from telethon.sessions import StringSession
 logger = logging.getLogger(__name__)
 
 _client: TelegramClient | None = None
-_bot_username: str | None = None
-_bot_id: int | None = None
+_bot_username: str = ""
 
 
 def is_available() -> bool:
@@ -26,14 +25,9 @@ def is_available() -> bool:
     return _client is not None and _client.is_connected()
 
 
-def get_bot_username() -> str | None:
-    """Return the helper bot's @username (without @), or None."""
+def get_bot_username() -> str:
+    """Return the helper bot's username (without @), or empty string."""
     return _bot_username
-
-
-def get_bot_id() -> int | None:
-    """Return the helper bot's numeric ID, or None."""
-    return _bot_id
 
 
 def _mask_token(token: str) -> str:
@@ -50,8 +44,9 @@ async def build_helper(bot_token: str) -> TelegramClient | None:
     Returns the connected ``TelegramClient`` or ``None`` if no token is set.
     Raises ``RuntimeError`` if the token is set but invalid.
     """
-    global _client, _bot_username, _bot_id
+    global _client
 
+    # ── Diagnostic report ────────────────────────────────────────────────
     env_ok = bool(bot_token)
     token_masked = _mask_token(bot_token) if bot_token else "(empty)"
     token_stripped = bot_token.strip() if bot_token else ""
@@ -65,6 +60,8 @@ async def build_helper(bot_token: str) -> TelegramClient | None:
     logger.info("HELPER ENV ........ %s", "OK" if env_ok else "FAIL")
     logger.info("HELPER TOKEN ...... %s (len=%d, stripped_len=%d, whitespace=%s)",
                 token_masked, token_len, len(token_stripped), has_whitespace)
+    logger.info("HELPER VAR NAME ... BOT_TOKEN (matches README + render.yaml)")
+    logger.info("HELPER FALLBACK ... default='' in config.py, no override")
     logger.info("API_ID ............ present=%s (len=%d)", bool(api_id_raw), len(api_id_raw))
     logger.info("API_HASH .......... present=%s (len=%d)", bool(api_hash_raw), len(api_hash_raw))
 
@@ -74,10 +71,11 @@ async def build_helper(bot_token: str) -> TelegramClient | None:
         return None
 
     if has_whitespace:
-        logger.warning("HELPER TOKEN has leading/trailing whitespace — stripping")
+        logger.warning("HELPER TOKEN has leading/trailing whitespace — stripping for validation")
 
     clean_token = token_stripped
 
+    # ── Lightweight validation: call get_me via bot_token before full client ──
     validation_pass = False
     validation_error = ""
     validation_exc_type = ""
@@ -106,6 +104,7 @@ async def build_helper(bot_token: str) -> TelegramClient | None:
         except Exception:
             pass
 
+    # ── Full client startup ───────────────────────────────────────────────
     login_pass = False
     login_error = ""
     login_exc_type = ""
@@ -126,9 +125,9 @@ async def build_helper(bot_token: str) -> TelegramClient | None:
         await client.start(bot_token=clean_token)
         me = await client.get_me()
         login_pass = True
+        global _bot_username
+        _bot_username = (me.username or "").lstrip("@")
         logger.info("HELPER LOGIN ...... PASS — bot @%s (id=%s)", me.username, me.id)
-        _bot_username = me.username
-        _bot_id = me.id
     except Exception as exc:
         login_error = str(exc)
         login_exc_type = type(exc).__name__
@@ -139,6 +138,7 @@ async def build_helper(bot_token: str) -> TelegramClient | None:
             except Exception:
                 pass
 
+    # ── Final report ──────────────────────────────────────────────────────
     reason = ""
     if not validation_pass:
         reason = f"{validation_exc_type}: {validation_error}"
@@ -164,15 +164,13 @@ async def build_helper(bot_token: str) -> TelegramClient | None:
 
 async def disconnect_helper() -> None:
     """Disconnect the helper bot cleanly."""
-    global _client, _bot_username, _bot_id
+    global _client
     if _client is not None:
         try:
             await _client.disconnect()
         except Exception as exc:
             logger.warning("Helper bot disconnect error: %s", exc)
         _client = None
-        _bot_username = None
-        _bot_id = None
 
 
 def get_client() -> TelegramClient | None:

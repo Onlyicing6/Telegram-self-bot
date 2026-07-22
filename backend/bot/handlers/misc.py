@@ -151,14 +151,17 @@ def _build_category_keyboard() -> list:
 
 
 async def _help_panel_handler(event, extra: str) -> None:
+    logger.info("[HELP_PANEL] handler entered: extra='%s'", extra)
     if extra == "close":
         try:
             await event.delete()
+            logger.info("[HELP_PANEL] close: message deleted")
         except Exception as exc:
-            logger.warning("help panel close failed: %s", exc)
+            logger.warning("[HELP_PANEL] close: delete failed: %s", exc)
         return
     if extra == "back":
         await event.edit(_build_main_menu_text(), buttons=_build_main_menu_keyboard())
+        logger.info("[HELP_PANEL] back: edited to main menu")
         return
     if extra.startswith("cat:"):
         idx_str = extra[4:]
@@ -169,12 +172,15 @@ async def _help_panel_handler(event, extra: str) -> None:
                     _build_category_page_text(idx),
                     buttons=_build_category_keyboard(),
                 )
+                logger.info("[HELP_PANEL] cat:%d: edited to category page", idx)
                 return
     await event.edit(_build_main_menu_text(), buttons=_build_main_menu_keyboard())
+    logger.info("[HELP_PANEL] default: edited to main menu")
 
 
 async def _help_inline_builder(event, extra: str) -> list:
     from backend.helper.inline_engine import make_result
+    logger.info("[HELP_BUILDER] entered: extra='%s'", extra)
     text = _build_main_menu_text()
     buttons = _build_main_menu_keyboard()
     from telethon.tl import types
@@ -188,6 +194,7 @@ async def _help_inline_builder(event, extra: str) -> list:
         title="LifeOS Command Center",
         send_message=msg,
     )
+    logger.info("[HELP_BUILDER] returning 1 result with %d button rows", len(buttons))
     return [result]
 
 
@@ -313,6 +320,7 @@ def _build_health_report(snap):
 
 async def _health_inline_builder(event, extra: str) -> list:
     from telethon.tl import types
+    logger.info("[HEALTH_BUILDER] entered: extra='%s'", extra)
     snap = health.snapshot()
     report = _build_health_report(snap)
     builder = InlinePanelBuilder()
@@ -329,11 +337,13 @@ async def _health_inline_builder(event, extra: str) -> list:
         title="LifeOS Health Dashboard",
         send_message=msg,
     )
+    logger.info("[HEALTH_BUILDER] returning 1 result")
     return [result]
 
 
 async def _kill_inline_builder(event, extra: str) -> list:
     from telethon.tl import types
+    logger.info("[KILL_BUILDER] entered: extra='%s'", extra)
     snap = health.snapshot()
     self_client = _get_self_client()
     report = diagnostics.build_diagnostic_report(
@@ -356,11 +366,13 @@ async def _kill_inline_builder(event, extra: str) -> list:
         title="LifeOS Diagnostics",
         send_message=msg,
     )
+    logger.info("[KILL_BUILDER] returning 1 result")
     return [result]
 
 
 async def _logs_inline_builder(event, extra: str) -> list:
     from telethon.tl import types
+    logger.info("[LOGS_BUILDER] entered: extra='%s'", extra)
     limit = 20
     if extra and extra.isdigit():
         limit = min(int(extra), 500)
@@ -386,6 +398,7 @@ async def _logs_inline_builder(event, extra: str) -> list:
         title="LifeOS Event Log",
         send_message=msg,
     )
+    logger.info("[LOGS_BUILDER] returning 1 result")
     return [result]
 
 
@@ -438,6 +451,7 @@ def register(client, owner_id: int):
     register_inline_builder("health", _health_inline_builder)
     register_inline_builder("kill", _kill_inline_builder)
     register_inline_builder("logs", _logs_inline_builder)
+    logger.info("[MISC] All inline builders registered: help, health, kill, logs")
 
     # ── .help — inline panel via Inline Mode (INSTRUMENTED) ────────────
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.help$"))
@@ -478,42 +492,49 @@ def register(client, owner_id: int):
             logger.exception("[HELP] unhandled exception in .help handler")
             raise
 
-    # ── .health — inline panel via Inline Mode ────────────────────────
+    # ── .health — inline panel via Inline Mode (INSTRUMENTED) ──────────
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.health$"))
     async def health_cmd(event):
-        if not is_owner(event, owner_id):
-            return
-        helper = get_client()
-        if helper is None:
-            try:
+        logger.info("[HEALTH] handler entered (chat_id=%s)", event.chat_id)
+        try:
+            if not is_owner(event, owner_id):
+                return
+            helper = get_client()
+            if helper is None:
+                logger.info("[HEALTH] helper None — edit-in-place fallback")
                 snap = health.snapshot()
                 report = _build_health_report(snap)
                 await _safe_edit(event, report)
                 diagnostics.record_event("health", "snapshot", 0, "SUCCESS")
-            except Exception as exc:
-                logger.warning("health_cmd failed: %s", exc)
-            return
-        try:
-            await event.delete()
-            await send_inline_panel(client, event.chat_id, "health")
-            diagnostics.record_event("health", "snapshot", 0, "SUCCESS")
-        except Exception as exc:
-            logger.warning("health inline send failed: %s", exc)
-            try:
+                return
+            logger.info("[HEALTH] sending inline panel")
+            panel_ok = await send_inline_panel(client, event.chat_id, "health")
+            logger.info("[HEALTH] send_inline_panel returned ok=%s", panel_ok)
+            if panel_ok:
+                try:
+                    await event.delete()
+                except Exception as del_exc:
+                    logger.warning("[HEALTH] event.delete() failed: %s", del_exc)
+                diagnostics.record_event("health", "snapshot", 0, "SUCCESS")
+            else:
+                logger.warning("[HEALTH] inline failed — fallback to edit-in-place")
                 snap = health.snapshot()
                 report = _build_health_report(snap)
                 await _safe_edit(event, report)
-            except Exception:
-                pass
+        except Exception:
+            logger.exception("[HEALTH] unhandled exception")
+            raise
 
-    # ── .kill — diagnostic snapshot + recovery (inline panel) ─────────
+    # ── .kill — diagnostic snapshot + recovery (INSTRUMENTED) ──────────
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.kill$"))
     async def kill_cmd(event):
-        if not is_owner(event, owner_id):
-            return
-        helper = get_client()
-        if helper is None:
-            try:
+        logger.info("[KILL] handler entered (chat_id=%s)", event.chat_id)
+        try:
+            if not is_owner(event, owner_id):
+                return
+            helper = get_client()
+            if helper is None:
+                logger.info("[KILL] helper None — edit-in-place fallback")
                 await event.edit("⏳ Collecting diagnostics...")
                 snap = health.snapshot()
                 report = diagnostics.build_diagnostic_report(
@@ -524,16 +545,18 @@ def register(client, owner_id: int):
                 )
                 await _safe_edit(event, report + recovery)
                 diagnostics.record_event("diagnostics", "kill", 0, "SUCCESS")
-            except Exception as exc:
-                logger.warning("kill_cmd failed: %s", exc)
-            return
-        try:
-            await event.delete()
-            await send_inline_panel(client, event.chat_id, "kill")
-            diagnostics.record_event("diagnostics", "kill", 0, "SUCCESS")
-        except Exception as exc:
-            logger.warning("kill inline send failed: %s", exc)
-            try:
+                return
+            logger.info("[KILL] sending inline panel")
+            panel_ok = await send_inline_panel(client, event.chat_id, "kill")
+            logger.info("[KILL] send_inline_panel returned ok=%s", panel_ok)
+            if panel_ok:
+                try:
+                    await event.delete()
+                except Exception as del_exc:
+                    logger.warning("[KILL] event.delete() failed: %s", del_exc)
+                diagnostics.record_event("diagnostics", "kill", 0, "SUCCESS")
+            else:
+                logger.warning("[KILL] inline failed — fallback to edit-in-place")
                 await event.edit("⏳ Collecting diagnostics...")
                 snap = health.snapshot()
                 report = diagnostics.build_diagnostic_report(
@@ -543,48 +566,71 @@ def register(client, owner_id: int):
                     client, owner_id, _resolve_tz(), bio_engine, db_client
                 )
                 await _safe_edit(event, report + recovery)
-            except Exception:
-                pass
+        except Exception:
+            logger.exception("[KILL] unhandled exception")
+            raise
 
-    # ── .logs — diagnostic event viewer (inline panel) ─────────────────
+    # ── .logs — diagnostic event viewer (INSTRUMENTED) ─────────────────
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.logs(?:\s+(.+))?$"))
     async def logs_cmd(event):
-        if not is_owner(event, owner_id):
-            return
+        logger.info("[LOGS] handler entered (chat_id=%s)", event.chat_id)
+        try:
+            if not is_owner(event, owner_id):
+                return
 
-        arg = (event.pattern_match.group(1) or "").strip()
-        query = "logs"
-        if arg:
-            if arg.lower() == "errors":
-                query = "logs:errors"
-            elif arg.lower().startswith("module "):
-                query = "logs"
-            elif arg.isdigit():
-                query = f"logs:{arg}"
-
-        helper = get_client()
-        if helper is None:
-            limit = 20
-            errors_only = False
+            arg = (event.pattern_match.group(1) or "").strip()
+            query = "logs"
             if arg:
                 if arg.lower() == "errors":
-                    errors_only = True
+                    query = "logs:errors"
                 elif arg.lower().startswith("module "):
-                    pass
+                    query = "logs"
                 elif arg.isdigit():
-                    limit = min(int(arg), 500)
-            try:
+                    query = f"logs:{arg}"
+
+            helper = get_client()
+            if helper is None:
+                logger.info("[LOGS] helper None — edit-in-place fallback")
+                limit = 20
+                errors_only = False
+                if arg:
+                    if arg.lower() == "errors":
+                        errors_only = True
+                    elif arg.lower().startswith("module "):
+                        pass
+                    elif arg.isdigit():
+                        limit = min(int(arg), 500)
                 events_list = diagnostics.filter_events(
                     limit=limit, errors_only=errors_only
                 )
                 text = diagnostics.format_events(events_list)
                 await _safe_edit(event, text)
-            except Exception as exc:
-                logger.warning("logs_cmd failed: %s", exc)
-            return
+                return
 
-        try:
-            await event.delete()
-            await send_inline_panel(client, event.chat_id, query)
-        except Exception as exc:
-            logger.warning("logs inline send failed: %s", exc)
+            logger.info("[LOGS] sending inline panel (query='%s')", query)
+            panel_ok = await send_inline_panel(client, event.chat_id, query)
+            logger.info("[LOGS] send_inline_panel returned ok=%s", panel_ok)
+            if panel_ok:
+                try:
+                    await event.delete()
+                except Exception as del_exc:
+                    logger.warning("[LOGS] event.delete() failed: %s", del_exc)
+            else:
+                logger.warning("[LOGS] inline failed — fallback to edit-in-place")
+                limit = 20
+                errors_only = False
+                if arg:
+                    if arg.lower() == "errors":
+                        errors_only = True
+                    elif arg.lower().startswith("module "):
+                        pass
+                    elif arg.isdigit():
+                        limit = min(int(arg), 500)
+                events_list = diagnostics.filter_events(
+                    limit=limit, errors_only=errors_only
+                )
+                text = diagnostics.format_events(events_list)
+                await _safe_edit(event, text)
+        except Exception:
+            logger.exception("[LOGS] unhandled exception")
+            raise

@@ -31,7 +31,10 @@ async def send_inline_panel(self_client, chat_id: int, query: str) -> bool:
 
     Returns True on success, False on failure.
     """
-    return await inline_engine.trigger(self_client, chat_id, query)
+    logger.info("[SEND_PANEL] entered: chat_id=%s, query='%s'", chat_id, query)
+    result = await inline_engine.trigger(self_client, chat_id, query)
+    logger.info("[SEND_PANEL] trigger() returned: ok=%s", result)
+    return result
 
 
 def register_input_listener(self_client, owner_id: int) -> None:
@@ -43,6 +46,7 @@ def register_input_listener(self_client, owner_id: int) -> None:
     the self-bot listens for the owner's next outgoing message in the same
     chat and feeds it to the pending handler.
     """
+    logger.info("[INPUT_LISTENER] register_input_listener() entered: owner_id=%s", owner_id)
 
     @self_client.on(events.NewMessage(outgoing=True))
     async def _input_listener(event):
@@ -67,7 +71,10 @@ def register_input_listener(self_client, owner_id: int) -> None:
         handler = pending_entry["handler"]
         inline_chat_id = pending_entry.get("inline_chat_id", 0)
         inline_msg_id = pending_entry.get("inline_msg_id", 0)
+        logger.info("[INPUT_LISTENER] dispatching: text='%s', chat_id=%s, msg_id=%s, inline_chat_id=%s, inline_msg_id=%s",
+                    text, event.chat_id, event.message.id, inline_chat_id, inline_msg_id)
         try:
             await handler(text, event.chat_id, event.message.id, inline_chat_id, inline_msg_id)
-        except Exception as exc:
-            logger.error("Input handler error: %s", exc)
+            logger.info("[INPUT_LISTENER] handler completed")
+        except Exception:
+            logger.exception("[INPUT_LISTENER] handler FAILED")

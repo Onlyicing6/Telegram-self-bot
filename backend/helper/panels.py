@@ -69,7 +69,7 @@ class InlinePanelBuilder:
 
 def register_panel(panel_id: str, handler: PanelHandler) -> None:
     _panels[panel_id] = handler
-    logger.debug("Panel registered: %s", panel_id)
+    logger.info("[PANEL] Registered: id='%s' (total=%d)", panel_id, len(_panels))
 
 
 def get_panel(panel_id: str) -> PanelHandler | None:
@@ -83,7 +83,7 @@ def register_action(action_id: str, handler: ActionHandler) -> None:
     a result string to display in the panel.
     """
     _actions[action_id] = handler
-    logger.debug("Action registered: %s", action_id)
+    logger.info("[ACTION] Registered: id='%s' (total=%d)", action_id, len(_actions))
 
 
 def get_action(action_id: str) -> ActionHandler | None:
@@ -100,7 +100,7 @@ def register_input(panel_id: str, input_id: str, handler: InputConfig) -> None:
     if panel_id not in _inputs:
         _inputs[panel_id] = {}
     _inputs[panel_id][input_id] = handler
-    logger.debug("Input registered: %s/%s", panel_id, input_id)
+    logger.info("[INPUT] Registered: panel='%s', input_id='%s'", panel_id, input_id)
 
 
 def get_input(panel_id: str, input_id: str) -> InputConfig | None:
@@ -115,25 +115,40 @@ def register_callback_handlers(client, owner_id: int) -> None:
       - ``action:`` → action execution handler (Type A)
       - ``input:`` → input state setup (Type B)
     """
+    logger.info("[CALLBACK] register_callback_handlers() entered: owner_id=%s", owner_id)
 
     @client.on(events.CallbackQuery())
     async def _callback_router(event):
+        logger.info("[CALLBACK] handler entered: data=%s, sender_id=%s, msg_id=%s",
+                    event.data, event.sender_id, event.msg_id)
+
         if not is_owner(event, owner_id):
+            logger.info("[CALLBACK] owner check FAILED: sender_id=%s, owner_id=%s",
+                        event.sender_id, owner_id)
             return
+
+        logger.info("[CALLBACK] owner check passed")
 
         data = event.data.decode("utf-8") if event.data else ""
         if not data:
+            logger.warning("[CALLBACK] empty callback data — ignoring")
             return
 
+        logger.info("[CALLBACK] dispatching: data='%s'", data)
         try:
             if data.startswith("panel:"):
+                logger.info("[CALLBACK] → _handle_panel(remainder='%s')", data[6:])
                 await _handle_panel(event, data[6:])
             elif data.startswith("action:"):
+                logger.info("[CALLBACK] → _handle_action(remainder='%s')", data[7:])
                 await _handle_action(event, data[7:])
             elif data.startswith("input:"):
+                logger.info("[CALLBACK] → _handle_input(remainder='%s')", data[6:])
                 await _handle_input(event, data[6:], owner_id)
-        except Exception as exc:
-            logger.error("Callback router error (data=%s): %s", data, exc)
+            else:
+                logger.warning("[CALLBACK] unknown prefix in data='%s'", data)
+        except Exception:
+            logger.exception("[CALLBACK] router error (data='%s')", data)
 
 
 async def _handle_panel(event, remainder: str) -> None:
@@ -141,12 +156,20 @@ async def _handle_panel(event, remainder: str) -> None:
     panel_id = parts[0]
     extra = parts[1] if len(parts) > 1 else ""
 
+    logger.info("[CALLBACK] _handle_panel: panel_id='%s', extra='%s'", panel_id, extra)
+
     handler = get_panel(panel_id)
     if handler is None:
-        logger.warning("No panel registered for id: %s", panel_id)
+        logger.warning("[CALLBACK] no panel registered for id='%s' (registered: %s)",
+                       panel_id, list(_panels.keys()))
         return
 
-    await handler(event, extra)
+    logger.info("[CALLBACK] panel handler found — invoking")
+    try:
+        await handler(event, extra)
+        logger.info("[CALLBACK] panel handler completed")
+    except Exception:
+        logger.exception("[CALLBACK] panel handler '%s' FAILED", panel_id)
 
 
 async def _handle_action(event, remainder: str) -> None:
@@ -154,23 +177,33 @@ async def _handle_action(event, remainder: str) -> None:
     action_id = parts[0]
     extra = parts[1] if len(parts) > 1 else ""
 
+    logger.info("[CALLBACK] _handle_action: action_id='%s', extra='%s'", action_id, extra)
+
     handler = get_action(action_id)
     if handler is None:
-        logger.warning("No action registered for id: %s", action_id)
+        logger.warning("[CALLBACK] no action registered for id='%s' (registered: %s)",
+                       action_id, list(_actions.keys()))
         return
 
-    result = await handler(event, extra)
-    if result is None:
-        return
-    if isinstance(result, tuple):
-        text, buttons = result
-    else:
-        text, buttons = result, []
-    if text:
-        try:
-            await event.edit(text, buttons=buttons)
-        except Exception as exc:
-            logger.warning("Action result edit failed: %s", exc)
+    logger.info("[CALLBACK] action handler found — invoking")
+    try:
+        result = await handler(event, extra)
+        logger.info("[CALLBACK] action handler returned: type=%s", type(result).__name__)
+
+        if result is None:
+            return
+        if isinstance(result, tuple):
+            text, buttons = result
+        else:
+            text, buttons = result, []
+        if text:
+            try:
+                await event.edit(text, buttons=buttons)
+                logger.info("[CALLBACK] action result edit succeeded")
+            except Exception as exc:
+                logger.warning("[CALLBACK] action result edit failed: %s", exc)
+    except Exception:
+        logger.exception("[CALLBACK] action handler '%s' FAILED", action_id)
 
 
 async def _handle_input(event, remainder: str, owner_id: int) -> None:
@@ -178,19 +211,25 @@ async def _handle_input(event, remainder: str, owner_id: int) -> None:
     panel_id = parts[0]
     input_id = parts[1] if len(parts) > 1 else ""
 
+    logger.info("[CALLBACK] _handle_input: panel_id='%s', input_id='%s'", panel_id, input_id)
+
     input_cfg = get_input(panel_id, input_id)
     if input_cfg is None:
-        logger.warning("No input registered: %s/%s", panel_id, input_id)
+        logger.warning("[CALLBACK] no input registered: panel='%s', input_id='%s' (registered: %s)",
+                       panel_id, input_id, list(_inputs.keys()))
         return
 
     prompt = input_cfg.get("prompt", "Enter input:")
     handler = input_cfg.get("handler")
 
     if handler is None:
+        logger.warning("[CALLBACK] input config has no handler")
         return
 
     chat_id = event.chat_id
     inline_msg_id = event.msg_id or 0
+    logger.info("[CALLBACK] setting pending: owner_id=%s, panel_id='%s', chat_id=%s, inline_msg_id=%s",
+                owner_id, panel_id, chat_id, inline_msg_id)
     set_pending(
         owner_id, panel_id, handler, chat_id, prompt,
         inline_chat_id=chat_id, inline_msg_id=inline_msg_id,
@@ -201,5 +240,6 @@ async def _handle_input(event, remainder: str, owner_id: int) -> None:
 
     try:
         await event.edit(prompt, buttons=builder.build())
+        logger.info("[CALLBACK] input prompt edit succeeded")
     except Exception as exc:
-        logger.warning("Input prompt edit failed: %s", exc)
+        logger.warning("[CALLBACK] input prompt edit failed: %s", exc)

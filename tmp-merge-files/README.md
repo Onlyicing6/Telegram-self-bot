@@ -1,3 +1,4 @@
+successfully downloaded text file (SHA: 74a4b5fa2619db5831a3d69d9e0b77d2940cbfb5)
 # LifeOS — Telegram Self-Bot
 
 A production-grade **Telegram self-bot** (userbot) that turns your own Telegram account into a personal operating system. Save anything, search instantly, automate your profile bio, and keep your data organized — all from a single headless Python process.
@@ -255,7 +256,7 @@ All tables have RLS enabled. SELECT is granted to `anon` + `authenticated` (dash
 
 1. Go to [my.telegram.org](https://my.telegram.org) and log in.
 2. Click **API development tools**.
-3. Create an application — you'll get an **API ID** (number) and an **API Hash** (string).
+3. Create an application — you'll get an **API ID** (number) and **API Hash** (string).
 4. Save these — you'll need them for `API_ID` and `API_HASH`.
 
 ### Step 2: Generate SESSION_STRING
@@ -799,3 +800,5 @@ If everything is broken and you need a clean start:
 ## License
 
 This project is for personal use. See the repository for details.
+
+(exit 0, 12ms)

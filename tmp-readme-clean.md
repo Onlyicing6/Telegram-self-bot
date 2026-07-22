@@ -255,7 +255,7 @@ All tables have RLS enabled. SELECT is granted to `anon` + `authenticated` (dash
 
 1. Go to [my.telegram.org](https://my.telegram.org) and log in.
 2. Click **API development tools**.
-3. Create an application — you'll get an **API ID** (number) and an **API Hash** (string).
+3. Create an application — you'll get an **API ID** (number) and **API Hash** (string).
 4. Save these — you'll need them for `API_ID` and `API_HASH`.
 
 ### Step 2: Generate SESSION_STRING

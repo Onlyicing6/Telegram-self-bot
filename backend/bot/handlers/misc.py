@@ -151,36 +151,45 @@ def _build_category_keyboard() -> list:
 
 
 async def _help_panel_handler(event, extra: str) -> None:
-    logger.info("[HELP_PANEL] handler entered: extra='%s'", extra)
+    logger.info("HELP STEP 13 - callback received: extra='%s'", extra)
     if extra == "close":
         try:
             await event.delete()
-            logger.info("[HELP_PANEL] close: message deleted")
-        except Exception as exc:
-            logger.warning("[HELP_PANEL] close: delete failed: %s", exc)
+            logger.info("HELP STEP 13 - close: message deleted")
+        except Exception:
+            logger.exception("HELP STEP 13 - close: delete FAILED")
         return
     if extra == "back":
-        await event.edit(_build_main_menu_text(), buttons=_build_main_menu_keyboard())
-        logger.info("[HELP_PANEL] back: edited to main menu")
+        try:
+            await event.edit(_build_main_menu_text(), buttons=_build_main_menu_keyboard())
+            logger.info("HELP STEP 13 - back: edited to main menu")
+        except Exception:
+            logger.exception("HELP STEP 13 - back: edit FAILED")
         return
     if extra.startswith("cat:"):
         idx_str = extra[4:]
         if idx_str.isdigit():
             idx = int(idx_str)
             if 0 <= idx < len(_HELP_CATEGORIES):
-                await event.edit(
-                    _build_category_page_text(idx),
-                    buttons=_build_category_keyboard(),
-                )
-                logger.info("[HELP_PANEL] cat:%d: edited to category page", idx)
+                try:
+                    await event.edit(
+                        _build_category_page_text(idx),
+                        buttons=_build_category_keyboard(),
+                    )
+                    logger.info("HELP STEP 13 - cat:%d: edited to category page", idx)
+                except Exception:
+                    logger.exception("HELP STEP 13 - cat:%d: edit FAILED", idx)
                 return
-    await event.edit(_build_main_menu_text(), buttons=_build_main_menu_keyboard())
-    logger.info("[HELP_PANEL] default: edited to main menu")
+    try:
+        await event.edit(_build_main_menu_text(), buttons=_build_main_menu_keyboard())
+        logger.info("HELP STEP 13 - default: edited to main menu")
+    except Exception:
+        logger.exception("HELP STEP 13 - default: edit FAILED")
 
 
 async def _help_inline_builder(event, extra: str) -> list:
     from backend.helper.inline_engine import make_result
-    logger.info("[HELP_BUILDER] entered: extra='%s'", extra)
+    logger.info("HELP STEP 8b - inline builder entered: extra='%s'", extra)
     text = _build_main_menu_text()
     buttons = _build_main_menu_keyboard()
     from telethon.tl import types
@@ -194,7 +203,7 @@ async def _help_inline_builder(event, extra: str) -> list:
         title="LifeOS Command Center",
         send_message=msg,
     )
-    logger.info("[HELP_BUILDER] returning 1 result with %d button rows", len(buttons))
+    logger.info("HELP STEP 8b - inline builder returning 1 result with %d button rows", len(buttons))
     return [result]
 
 
@@ -456,40 +465,46 @@ def register(client, owner_id: int):
     # ── .help — inline panel via Inline Mode (INSTRUMENTED) ────────────
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.help$"))
     async def help_cmd(event):
-        logger.info("[HELP] LOG 1: .help handler entered (chat_id=%s, msg_id=%s)", event.chat_id, event.message.id)
+        logger.info("HELP STEP 1 - .help handler entered (chat_id=%s, msg_id=%s)", event.chat_id, event.message.id)
         try:
             if not is_owner(event, owner_id):
-                logger.info("[HELP] owner check FAILED (sender_id=%s, owner_id=%s)", event.sender_id, owner_id)
+                logger.warning("HELP STEP 1 - owner check FAILED (sender_id=%s, owner_id=%s)", event.sender_id, owner_id)
                 return
-            logger.info("[HELP] LOG 2: owner check passed (sender_id=%s)", event.sender_id)
+            logger.info("HELP STEP 1 - owner check passed (sender_id=%s)", event.sender_id)
 
+            logger.info("HELP STEP 2 - get_client()")
             helper = get_client()
-            logger.info("[HELP] LOG 3: helper client acquired (helper=%s)", "None" if helper is None else "connected")
+            logger.info("HELP STEP 2 - get_client() returned: helper=%s", "None" if helper is None else "connected")
             if helper is None:
-                logger.info("[HELP] helper is None — falling back to edit-in-place")
-                await event.edit(_build_main_menu_text())
-                logger.info("[HELP] LOG 7: handler finished (edit-in-place fallback)")
+                logger.warning("HELP STEP 2 - helper is None — REASON: no BOT_TOKEN set or build_helper() failed. Falling back to edit-in-place.")
+                try:
+                    await event.edit(_build_main_menu_text())
+                except Exception:
+                    logger.exception("HELP STEP 2 - edit-in-place fallback FAILED")
                 return
 
-            logger.info("[HELP] LOG 4: about to send inline panel (query='help', chat_id=%s)", event.chat_id)
+            logger.info("HELP STEP 3 - send_inline_panel(client, chat_id=%s, query='help')", event.chat_id)
             panel_ok = await send_inline_panel(client, event.chat_id, "help")
-            logger.info("[HELP] LOG 5: send_inline_panel returned (ok=%s)", panel_ok)
+            logger.info("HELP STEP 3 - send_inline_panel returned: ok=%s", panel_ok)
 
             if not panel_ok:
-                logger.warning("[HELP] send_inline_panel returned False — falling back to edit-in-place")
-                await event.edit(_build_main_menu_text())
-                logger.info("[HELP] LOG 7: handler finished (fallback after failed inline)")
+                logger.warning("HELP STEP 3 - send_inline_panel returned False — REASON: see HELP STEP logs above for the exact failure. Falling back to edit-in-place.")
+                try:
+                    await event.edit(_build_main_menu_text())
+                except Exception:
+                    logger.exception("HELP STEP 3 - edit-in-place fallback FAILED")
                 return
 
+            logger.info("HELP STEP 11 - deleting trigger message (msg_id=%s)", event.message.id)
             try:
                 await event.delete()
-                logger.info("[HELP] LOG 6: trigger deleted (msg_id=%s)", event.message.id)
-            except Exception as del_exc:
-                logger.warning("[HELP] event.delete() failed: %s", del_exc)
+                logger.info("HELP STEP 11 - trigger message deleted")
+            except Exception:
+                logger.exception("HELP STEP 11 - event.delete() FAILED")
 
-            logger.info("[HELP] LOG 7: handler finished (success)")
+            logger.info("HELP STEP 1 - handler finished (success)")
         except Exception:
-            logger.exception("[HELP] unhandled exception in .help handler")
+            logger.exception("HELP STEP 1 - unhandled exception in .help handler")
             raise
 
     # ── .health — inline panel via Inline Mode (INSTRUMENTED) ──────────

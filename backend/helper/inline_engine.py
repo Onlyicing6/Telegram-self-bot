@@ -75,32 +75,36 @@ async def trigger(self_client, chat_id: int, query: str) -> bool:
 
     Returns True on success, False on failure.
     """
-    logger.info("[INLINE] trigger() entered: chat_id=%s, query='%s', username='%s'",
-                chat_id, query, _helper_username)
+    logger.info("HELP STEP 4 - trigger() entered: chat_id=%s, query='%s'", chat_id, query)
 
+    logger.info("HELP STEP 5 - helper username: '%s'", _helper_username)
     if not _helper_username:
-        logger.error("[INLINE] trigger() ABORT: helper username not set (_helper_username='%s')", _helper_username)
+        logger.error("HELP STEP 5 - trigger() ABORT: helper username not set (_helper_username='%s') — REASON: set_helper_username() was never called or get_bot_username() returned empty", _helper_username)
         return False
 
-    logger.info("[INLINE] trigger() about to call self_client.inline_query('@%s', '%s')", _helper_username, query)
+    logger.info("HELP STEP 6 - inline_query() before: bot='@%s', query='%s'", _helper_username, query)
     try:
         results = await self_client.inline_query(_helper_username, query)
-        logger.info("[INLINE] trigger() inline_query returned: results_count=%d", len(results) if results else 0)
+        logger.info("HELP STEP 7 - inline_query() returned: type=%s, results_count=%d",
+                    type(results).__name__, len(results) if results else 0)
 
         if results:
-            logger.info("[INLINE] trigger() about to click results[0] to chat_id=%s", chat_id)
+            logger.info("HELP STEP 8 - results count: %d", len(results))
+            logger.info("HELP STEP 9 - clicking results[0] to chat_id=%s (result type=%s, id=%s)",
+                        chat_id, type(results[0]).__name__, getattr(results[0], 'result', None))
             try:
-                await results[0].click(chat_id)
-                logger.info("[INLINE] trigger() results[0].click() succeeded")
+                sent_msg = await results[0].click(chat_id)
+                logger.info("HELP STEP 10 - result sent successfully: sent_msg=%s", sent_msg)
                 return True
             except Exception as click_exc:
-                logger.exception("[INLINE] trigger() results[0].click() FAILED: %s", click_exc)
+                logger.exception("HELP STEP 10 - click() FAILED: %s", click_exc)
                 return False
         else:
-            logger.warning("[INLINE] trigger() no results for query='%s' — builder returned empty list", query)
+            logger.warning("HELP STEP 8 - zero results: query='%s', helper_username='@%s', returned_object=%s — REASON: helper bot InlineQuery handler did not answer or returned empty list",
+                           query, _helper_username, repr(results))
             return False
     except Exception as exc:
-        logger.exception("[INLINE] trigger() inline_query() FAILED: %s", exc)
+        logger.exception("HELP STEP 7 - inline_query() FAILED: %s", exc)
         return False
 
 
@@ -109,63 +113,63 @@ def register_inline_handler(helper_client, owner_id: int) -> None:
 
     @helper_client.on(events.InlineQuery())
     async def _inline_router(event):
-        logger.info("[INLINE_QUERY] handler entered: query='%s', user_id=%s",
+        logger.info("HELP STEP 8a - InlineQuery handler entered: query='%s', user_id=%s",
                     event.query, event.sender_id)
 
         if not is_owner(event, owner_id):
-            logger.info("[INLINE_QUERY] owner check FAILED: sender_id=%s, owner_id=%s",
+            logger.warning("HELP STEP 8a - owner check FAILED: sender_id=%s, owner_id=%s",
                         event.sender_id, owner_id)
             try:
                 await event.answer([])
             except Exception:
-                pass
+                logger.exception("HELP STEP 8a - failed to answer empty results on owner check fail")
             return
 
-        logger.info("[INLINE_QUERY] owner check passed")
+        logger.info("HELP STEP 8a - owner check passed")
 
         raw_query = event.query.strip()
         if not raw_query:
-            logger.warning("[INLINE_QUERY] empty query — answering with empty list")
+            logger.warning("HELP STEP 8a - empty query — answering with empty list")
             try:
                 await event.answer([])
             except Exception:
-                pass
+                logger.exception("HELP STEP 8a - failed to answer empty results on empty query")
             return
 
         parts = raw_query.split(":", 1)
         panel_id = parts[0]
         extra = parts[1] if len(parts) > 1 else ""
 
-        logger.info("[INLINE_QUERY] parsed: panel_id='%s', extra='%s'", panel_id, extra)
+        logger.info("HELP STEP 8a - parsed: panel_id='%s', extra='%s'", panel_id, extra)
 
         builder = get_inline_builder(panel_id)
         if builder is None:
-            logger.warning("[INLINE_QUERY] no builder for panel_id='%s' (registered: %s)",
+            logger.warning("HELP STEP 8a - no builder for panel_id='%s' (registered: %s) — REASON: register_inline_builder() was never called for this key",
                            panel_id, list(_builders.keys()))
             try:
                 await event.answer([])
             except Exception:
-                pass
+                logger.exception("HELP STEP 8a - failed to answer empty results on missing builder")
             return
 
-        logger.info("[INLINE_QUERY] builder found for '%s' — invoking", panel_id)
+        logger.info("HELP STEP 8a - builder found for '%s' — invoking", panel_id)
         try:
             results = await builder(event, extra)
-            logger.info("[INLINE_QUERY] builder returned: results_count=%d",
+            logger.info("HELP STEP 8a - builder returned: results_count=%d",
                         len(results) if results else 0)
 
             if not results:
-                logger.warning("[INLINE_QUERY] builder returned empty list for panel_id='%s'", panel_id)
+                logger.warning("HELP STEP 8a - builder returned empty list for panel_id='%s' — REASON: builder function returned []", panel_id)
 
-            logger.info("[INLINE_QUERY] about to call event.answer(results)")
+            logger.info("HELP STEP 8a - about to call event.answer(results)")
             await event.answer(results)
-            logger.info("[INLINE_QUERY] event.answer() succeeded")
+            logger.info("HELP STEP 8a - event.answer() succeeded")
         except Exception as exc:
-            logger.exception("[INLINE_QUERY] builder '%s' FAILED: %s", panel_id, exc)
+            logger.exception("HELP STEP 8a - builder '%s' FAILED: %s", panel_id, exc)
             try:
                 await event.answer([])
             except Exception:
-                pass
+                logger.exception("HELP STEP 8a - failed to answer empty results on builder error")
 
 
 def make_result(

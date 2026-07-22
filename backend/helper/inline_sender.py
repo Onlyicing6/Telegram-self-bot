@@ -31,9 +31,11 @@ async def send_inline_panel(self_client, chat_id: int, query: str) -> bool:
 
     Returns True on success, False on failure.
     """
-    logger.info("[SEND_PANEL] entered: chat_id=%s, query='%s'", chat_id, query)
+    logger.info("HELP STEP 3 - send_inline_panel entered: chat_id=%s, query='%s'", chat_id, query)
     result = await inline_engine.trigger(self_client, chat_id, query)
-    logger.info("[SEND_PANEL] trigger() returned: ok=%s", result)
+    logger.info("HELP STEP 3 - send_inline_panel: trigger() returned: ok=%s", result)
+    if not result:
+        logger.warning("HELP STEP 3 - send_inline_panel returning False — REASON: trigger() returned False, see HELP STEP 4+ logs for exact failure")
     return result
 
 

@@ -260,14 +260,19 @@ async def main() -> None:
         try:
             helper_client = await build_helper(cfg["BOT_TOKEN"])
             if helper_client is not None:
+                logger.info("HELP STEP 12 - register_callback_handlers() about to be called")
                 register_callback_handlers(helper_client, cfg["OWNER_ID"])
+                logger.info("HELP STEP 12 - register_callback_handlers() completed")
+                logger.info("HELP STEP 8a - register_inline_handler() about to be called")
                 register_inline_handler(helper_client, cfg["OWNER_ID"])
+                logger.info("HELP STEP 8a - register_inline_handler() completed")
                 set_self_client(client)
+                logger.info("HELP STEP 5 - set_helper_username('%s')", get_bot_username())
                 set_helper_username(get_bot_username())
                 set_owner_id(cfg["OWNER_ID"])
                 register_input_listener(client, cfg["OWNER_ID"])
                 logger.info("[3.5/5] Helper bot online — Inline Mode enabled")
-                logger.info("[3.5/5] Helper username: '%s'", get_bot_username())
+                logger.info("HELP STEP 5 - helper username set to: '%s'", get_bot_username())
                 logger.info("[3.5/5] Registered inline builders will be logged by inline_engine")
         except Exception:
             logger.exception("[3.5/5] Helper bot failed — inline UI disabled")

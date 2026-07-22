@@ -115,40 +115,40 @@ def register_callback_handlers(client, owner_id: int) -> None:
       - ``action:`` → action execution handler (Type A)
       - ``input:`` → input state setup (Type B)
     """
-    logger.info("[CALLBACK] register_callback_handlers() entered: owner_id=%s", owner_id)
+    logger.info("HELP STEP 12 - callback handler registered: owner_id=%s", owner_id)
 
     @client.on(events.CallbackQuery())
     async def _callback_router(event):
-        logger.info("[CALLBACK] handler entered: data=%s, sender_id=%s, msg_id=%s",
+        logger.info("HELP STEP 13 - callback received: data=%s, sender_id=%s, msg_id=%s",
                     event.data, event.sender_id, event.msg_id)
 
         if not is_owner(event, owner_id):
-            logger.info("[CALLBACK] owner check FAILED: sender_id=%s, owner_id=%s",
+            logger.warning("HELP STEP 13 - callback owner check FAILED: sender_id=%s, owner_id=%s",
                         event.sender_id, owner_id)
             return
 
-        logger.info("[CALLBACK] owner check passed")
+        logger.info("HELP STEP 13 - callback owner check passed")
 
         data = event.data.decode("utf-8") if event.data else ""
         if not data:
-            logger.warning("[CALLBACK] empty callback data — ignoring")
+            logger.warning("HELP STEP 13 - empty callback data — ignoring")
             return
 
-        logger.info("[CALLBACK] dispatching: data='%s'", data)
+        logger.info("HELP STEP 13 - callback dispatching: data='%s'", data)
         try:
             if data.startswith("panel:"):
-                logger.info("[CALLBACK] → _handle_panel(remainder='%s')", data[6:])
+                logger.info("HELP STEP 13 - callback → _handle_panel(remainder='%s')", data[6:])
                 await _handle_panel(event, data[6:])
             elif data.startswith("action:"):
-                logger.info("[CALLBACK] → _handle_action(remainder='%s')", data[7:])
+                logger.info("HELP STEP 13 - callback → _handle_action(remainder='%s')", data[7:])
                 await _handle_action(event, data[7:])
             elif data.startswith("input:"):
-                logger.info("[CALLBACK] → _handle_input(remainder='%s')", data[6:])
+                logger.info("HELP STEP 13 - callback → _handle_input(remainder='%s')", data[6:])
                 await _handle_input(event, data[6:], owner_id)
             else:
-                logger.warning("[CALLBACK] unknown prefix in data='%s'", data)
+                logger.warning("HELP STEP 13 - callback unknown prefix in data='%s'", data)
         except Exception:
-            logger.exception("[CALLBACK] router error (data='%s')", data)
+            logger.exception("HELP STEP 13 - callback router error (data='%s')", data)
 
 
 async def _handle_panel(event, remainder: str) -> None:

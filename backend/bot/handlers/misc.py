@@ -439,7 +439,7 @@ def register(client, owner_id: int):
     register_inline_builder("kill", _kill_inline_builder)
     register_inline_builder("logs", _logs_inline_builder)
 
-    # ── .help — inline panel via Inline Mode ───────────────────────────
+    # ── .help — inline panel via Inline Mode (INSTRUMENTED) ────────────
     @client.on(events.NewMessage(outgoing=True, pattern=r"^\.help$"))
     async def help_cmd(event):
         logger.info("[HELP] LOG 1: .help handler entered (chat_id=%s, msg_id=%s)", event.chat_id, event.message.id)
@@ -467,9 +467,9 @@ def register(client, owner_id: int):
                 logger.info("[HELP] LOG 7: handler finished (fallback after failed inline)")
                 return
 
-            logger.info("[HELP] LOG 6: trigger deleted (msg_id=%s)", event.message.id)
             try:
                 await event.delete()
+                logger.info("[HELP] LOG 6: trigger deleted (msg_id=%s)", event.message.id)
             except Exception as del_exc:
                 logger.warning("[HELP] event.delete() failed: %s", del_exc)
 

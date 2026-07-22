@@ -88,13 +88,13 @@ async def trigger(self_client, chat_id: int, query: str) -> bool:
         logger.info("[INLINE] trigger() inline_query returned: results_count=%d", len(results) if results else 0)
 
         if results:
-            logger.info("[INLINE] trigger() about to send results[0] to chat_id=%s", chat_id)
+            logger.info("[INLINE] trigger() about to click results[0] to chat_id=%s", chat_id)
             try:
-                await results[0].send(chat_id)
-                logger.info("[INLINE] trigger() results[0].send() succeeded")
+                await results[0].click(chat_id)
+                logger.info("[INLINE] trigger() results[0].click() succeeded")
                 return True
-            except Exception as send_exc:
-                logger.exception("[INLINE] trigger() results[0].send() FAILED: %s", send_exc)
+            except Exception as click_exc:
+                logger.exception("[INLINE] trigger() results[0].click() FAILED: %s", click_exc)
                 return False
         else:
             logger.warning("[INLINE] trigger() no results for query='%s' — builder returned empty list", query)

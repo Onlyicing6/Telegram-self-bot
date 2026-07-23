@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 def register_all(client, owner_id: int, tz_str: str):
+    logger.info("REGISTER_ALL: client id=%s, owner_id=%s, tz=%s", id(client), owner_id, tz_str)
     handlers = [
         ("misc", lambda: misc.register(client, owner_id)),
         ("save", lambda: save.register(client, owner_id, tz_str)),
@@ -26,6 +27,6 @@ def register_all(client, owner_id: int, tz_str: str):
     for name, fn in handlers:
         try:
             fn()
-            logger.info("Handler '%s' registered.", name)
+            logger.info("REGISTER_ALL: handler '%s' registered OK on client id(%s)", name, id(client))
         except Exception as exc:
-            logger.error("Handler '%s' registration FAILED: %s", name, exc)
+            logger.error("REGISTER_ALL: handler '%s' registration FAILED on client id(%s): %s", name, id(client), exc)
